@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/karanmonu/flakewatch/internal/analyze"
 	"github.com/karanmonu/flakewatch/internal/pricing"
@@ -34,13 +35,24 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		} else {
 			fmt.Fprintf(w, "%-28s %5s %6s %7s %7s\n", "WORKFLOW", "RUNS", "FAIL%", "FLAKY", "AVG(s)")
 		}
+		var thin int
 		for _, s := range r.Workflows {
-			fmt.Fprintf(w, "%-28s %5d %5.0f%% %7.2f %7.0f",
-				truncate(s.Name, 28), s.Runs, s.FailureRate*100, s.FlakinessScore, s.AvgDurationSec)
+			score := fmt.Sprintf("%7.2f", s.FlakinessScore)
+			if !s.ScoreConfident {
+				score = fmt.Sprintf("%7s", "-")
+				thin++
+			}
+			fmt.Fprintf(w, "%-28s %5d %5.0f%% %s %7.0f",
+				truncate(s.Name, 28), s.Runs, s.FailureRate*100, score, s.AvgDurationSec)
 			if showCost {
 				fmt.Fprintf(w, " %9s", usd(s.CostUSD))
 			}
-			fmt.Fprintf(w, "  %s\n", badge(s.FlakinessScore))
+			fmt.Fprintf(w, "  %s\n", badge(s))
+		}
+		if thin > 0 {
+			fmt.Fprintf(w, "\n%d workflow(s) had fewer than %d runs in this window, so no flakiness\n"+
+				"score is shown for them. Raise -runs to widen the sample.\n",
+				thin, analyze.MinRunsForScore)
 		}
 	}
 
@@ -80,7 +92,9 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 		fmt.Fprintf(w, "%d job(s) ran on self-hosted runners and are excluded (not currently billed).\n", c.SelfHostedJobs)
 	}
 	if c.UnknownRunnerJobs > 0 {
-		fmt.Fprintf(w, "%d job(s) used a runner label with no published rate and are excluded, so this is an undercount.\n", c.UnknownRunnerJobs)
+		fmt.Fprintf(w, "%d job(s) used a runner label with no published rate and are excluded,\n"+
+			"so this is an undercount. Labels: %s\n",
+			c.UnknownRunnerJobs, strings.Join(c.UnknownLabels, ", "))
 	}
 	if c.RunsMissingJobs > 0 {
 		fmt.Fprintf(w, "%d of %d runs had no job data (aged out) and are excluded.\n",
@@ -102,11 +116,14 @@ func usd(v float64) string {
 	}
 }
 
-func badge(score float64) string {
+func badge(s analyze.WorkflowStats) string {
+	if !s.ScoreConfident {
+		return fmt.Sprintf("only %d run(s)", s.Runs)
+	}
 	switch {
-	case score >= 0.5:
+	case s.FlakinessScore >= 0.5:
 		return "🔴 flaky"
-	case score >= 0.2:
+	case s.FlakinessScore >= 0.2:
 		return "🟡 unstable"
 	default:
 		return "🟢 stable"
