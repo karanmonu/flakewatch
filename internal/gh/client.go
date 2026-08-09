@@ -1,5 +1,5 @@
 // Package gh is a minimal, dependency-free GitHub REST API client scoped to
-// what flakewatch needs: listing workflow runs.
+// what flakewatch needs: listing workflow runs and their jobs.
 package gh
 
 import (
@@ -26,6 +26,27 @@ type runsPage struct {
 	WorkflowRuns []WorkflowRun `json:"workflow_runs"`
 }
 
+// APIError is a non-2xx response from the GitHub API.
+//
+// Callers need to tell 404 apart from everything else: job data disappears for
+// old runs, which is routine and must not abort an analysis, whereas a 401 or a
+// rate-limit response must.
+type APIError struct {
+	StatusCode int
+	Status     string
+	URL        string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("GitHub API returned %s for %s", e.Status, e.URL)
+}
+
+// NotFound reports whether err is a 404 from the GitHub API.
+func NotFound(err error) bool {
+	apiErr, ok := err.(*APIError)
+	return ok && apiErr.StatusCode == http.StatusNotFound
+}
+
 // Client talks to the GitHub REST API.
 type Client struct {
 	token   string
@@ -42,6 +63,31 @@ func NewClient(token string) *Client {
 	}
 }
 
+// get performs a GET against path and decodes the JSON body into out.
+func (c *Client) get(path string, out any) error {
+	url := c.baseURL + path
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{StatusCode: resp.StatusCode, Status: resp.Status, URL: url}
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
 // ListWorkflowRuns fetches up to max recent workflow runs for repo ("owner/name"),
 // newest first, paginating as needed (100 per page).
 func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
@@ -51,29 +97,10 @@ func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
 		perPage = max
 	}
 	for page := 1; len(all) < max; page++ {
-		url := fmt.Sprintf("%s/repos/%s/actions/runs?per_page=%d&page=%d", c.baseURL, repo, perPage, page)
-		req, err := http.NewRequest(http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, err
-		}
 		var pageData runsPage
-		decodeErr := json.NewDecoder(resp.Body).Decode(&pageData)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GitHub API returned %s for %s", resp.Status, url)
-		}
-		if decodeErr != nil {
-			return nil, decodeErr
+		path := fmt.Sprintf("/repos/%s/actions/runs?per_page=%d&page=%d", repo, perPage, page)
+		if err := c.get(path, &pageData); err != nil {
+			return nil, err
 		}
 		if len(pageData.WorkflowRuns) == 0 {
 			break
@@ -88,4 +115,3 @@ func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
 	}
 	return all, nil
 }
-
