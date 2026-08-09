@@ -20,3 +20,18 @@ jobs:
       - name: Build
         run: go build ./...
 
+  # Runs flakewatch against its own repository so every build produces real
+  # output. Catches the class of bug unit tests cannot: a response shape that
+  # differs from what the code expects. GITHUB_TOKEN is provided automatically.
+  demo:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Analyze this repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run . -repo "$GITHUB_REPOSITORY" -runs 30 -cost
