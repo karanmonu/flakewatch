@@ -27,7 +27,19 @@ type WorkflowStats struct {
 	FlakinessScore float64 `json:"flakiness_score"`
 	AvgDurationSec float64 `json:"avg_duration_sec"`
 	CostUSD        float64 `json:"cost_usd"` // populated only when -cost is used
+	// ScoreConfident reports whether there were enough runs for the flakiness
+	// score to mean anything. See MinRunsForScore.
+	ScoreConfident bool `json:"score_confident"`
 }
+
+// MinRunsForScore is the fewest completed runs before a flakiness score is
+// worth reporting.
+//
+// With two runs, one pass and one fail, the maths produces 1.0 -- the maximum
+// possible score -- from what is really a single coin flip. Any threshold here
+// is a judgement call; five is low enough to stay useful on quiet repos and
+// high enough that one flip cannot pin the score to an extreme.
+const MinRunsForScore = 5
 
 // Zombie is a run stuck in progress.
 type Zombie struct {
@@ -89,10 +101,18 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 		s.FailureRate = float64(s.Failures) / float64(s.Runs)
 		s.AvgDurationSec = totalDur / float64(s.Runs)
 		s.FlakinessScore = flakinessScore(s.Runs, s.Transitions, s.FailureRate)
+		s.ScoreConfident = s.Runs >= MinRunsForScore
 		stats = append(stats, s)
 	}
 
-	sort.Slice(stats, func(i, j int) bool { return stats[i].FlakinessScore > stats[j].FlakinessScore })
+	// Confident scores sort above unreliable ones, so a workflow with two runs
+	// cannot head the table on a score built from a single flip.
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].ScoreConfident != stats[j].ScoreConfident {
+			return stats[i].ScoreConfident
+		}
+		return stats[i].FlakinessScore > stats[j].FlakinessScore
+	})
 	return Result{Workflows: stats, Zombies: zombies}
 }
 
