@@ -1,0 +1,4 @@
+flakewatch
+*.exe
+dist/
+
