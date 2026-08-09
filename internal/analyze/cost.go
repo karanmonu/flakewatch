@@ -60,6 +60,9 @@ type CostSummary struct {
 	// blind spots: anyone can read the list and open an issue, and it is the
 	// fastest way to find rates missing from the table.
 	UnknownLabels []string `json:"unknown_labels,omitempty"`
+	// Opportunities lists per-workflow spend on platforms dearer than Linux,
+	// with the Linux counterfactual priced. Observations, not recommendations.
+	Opportunities []Opportunity `json:"opportunities,omitempty"`
 }
 
 // minWindowForExtrapolation is the shortest observed window we will scale to a
@@ -166,11 +169,14 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		UnknownLabels:     labels,
 	}
 
+	var monthlyFactor float64
 	if window := newest.Sub(oldest); window > 0 {
 		summary.WindowDays = window.Hours() / 24
 		if window >= minWindowForExtrapolation {
-			summary.MonthlyUSD = total * (30 * 24 * float64(time.Hour) / float64(window))
+			monthlyFactor = 30 * 24 * float64(time.Hour) / float64(window)
+			summary.MonthlyUSD = total * monthlyFactor
 		}
 	}
+	summary.Opportunities = findOpportunities(runs, jobs, monthlyFactor)
 	return summary
 }
