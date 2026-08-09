@@ -26,6 +26,7 @@ type WorkflowStats struct {
 	Transitions    int     `json:"transitions"` // pass<->fail flips in chronological order
 	FlakinessScore float64 `json:"flakiness_score"`
 	AvgDurationSec float64 `json:"avg_duration_sec"`
+	CostUSD        float64 `json:"cost_usd"` // populated only when -cost is used
 }
 
 // Zombie is a run stuck in progress.
@@ -39,6 +40,7 @@ type Zombie struct {
 type Result struct {
 	Workflows []WorkflowStats `json:"workflows"`
 	Zombies   []Zombie        `json:"zombies"`
+	Cost      CostSummary     `json:"cost"`
 }
 
 // Analyze groups runs by workflow name and computes stats.
@@ -106,4 +108,3 @@ func flakinessScore(runs, transitions int, failureRate float64) float64 {
 	extremeDamp := 4 * failureRate * (1 - failureRate)
 	return transitionRate * extremeDamp
 }
-
