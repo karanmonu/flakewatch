@@ -17,6 +17,12 @@ import (
 func RunCostUSD(jobs []gh.Job) float64 {
 	var total float64
 	for _, j := range jobs {
+		if j.DurationMS() == 0 {
+			// Skipped or never-started job. It has no runner and no cost, and
+			// treating it as an unpriceable job would misreport how much of the
+			// estimate is missing.
+			continue
+		}
 		runner := pricing.Resolve(j.Labels)
 		if !runner.Known {
 			// Self-hosted, or a label we have no published rate for. Skipping
@@ -63,8 +69,8 @@ const minWindowForExtrapolation = 24 * time.Hour
 
 // SummarizeCost prices a set of runs and attributes spend per workflow.
 //
-// It fills in the CostUSD field of each workflow stat and returns the
-// repository-level summary.
+// It fills in the CostUSD field of each workflow stat, replaces AvgDurationSec
+// with measured execution time, and returns the repository-level summary.
 func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats) CostSummary {
 	costByWorkflow := make(map[string]float64, len(stats))
 
@@ -76,6 +82,8 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		oldest, newest time.Time
 	)
 	unknownLabels := make(map[string]struct{})
+	execSecondsByWorkflow := make(map[string]float64, len(stats))
+	execRunsByWorkflow := make(map[string]int, len(stats))
 
 	for _, r := range runs {
 		runJobs, ok := jobs.ByRun[r.ID]
@@ -87,7 +95,31 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		total += cost
 		priced++
 
+		// Execution wall-clock for this run: first job start to last job finish.
+		// The run record's UpdatedAt is not a substitute -- it moves for reasons
+		// unrelated to execution, which is how a two-cent auto-assign workflow
+		// came out averaging three hours.
+		var firstStart, lastEnd time.Time
 		for _, j := range runJobs {
+			if j.DurationMS() == 0 {
+				continue
+			}
+			if firstStart.IsZero() || j.StartedAt.Before(firstStart) {
+				firstStart = j.StartedAt
+			}
+			if j.CompletedAt.After(lastEnd) {
+				lastEnd = j.CompletedAt
+			}
+		}
+		if lastEnd.After(firstStart) {
+			execSecondsByWorkflow[r.Name] += lastEnd.Sub(firstStart).Seconds()
+			execRunsByWorkflow[r.Name]++
+		}
+
+		for _, j := range runJobs {
+			if j.DurationMS() == 0 {
+				continue
+			}
 			switch runner := pricing.Resolve(j.Labels); {
 			case runner.SelfHosted:
 				selfHosted++
@@ -113,6 +145,10 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 
 	for i := range stats {
 		stats[i].CostUSD = costByWorkflow[stats[i].Name]
+		// Prefer measured execution time over the run record's wall clock.
+		if n := execRunsByWorkflow[stats[i].Name]; n > 0 {
+			stats[i].AvgDurationSec = execSecondsByWorkflow[stats[i].Name] / float64(n)
+		}
 	}
 
 	labels := make([]string, 0, len(unknownLabels))
