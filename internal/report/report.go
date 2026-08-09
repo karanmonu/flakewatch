@@ -64,6 +64,7 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 	}
 
 	if showCost {
+		writeOpportunities(w, r.Cost.Opportunities)
 		fmt.Fprintf(w, "\nRates: %s (retrieved %s)\n", pricing.RatesSource, pricing.RatesRetrieved)
 	}
 	fmt.Fprintln(w)
@@ -101,6 +102,31 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 			c.RunsMissingJobs, c.RunsPriced+c.RunsMissingJobs)
 	}
 	fmt.Fprintln(w)
+}
+
+// writeOpportunities lists spend on platforms dearer than Linux.
+//
+// The wording matters. flakewatch knows a workflow spent money on macOS; it does
+// not know whether that workflow needs macOS. Printing "you can save $X" would
+// be wrong for every repo that builds Apple software, so the heading states what
+// was measured and the closing note hands the judgement back.
+func writeOpportunities(w io.Writer, opps []analyze.Opportunity) {
+	if len(opps) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nSpend on platforms dearer than Linux:\n")
+	fmt.Fprintf(w, "%-28s %-8s %5s %9s %11s  %s\n", "WORKFLOW", "PLATFORM", "JOBS", "COST", "ON LINUX", "DIFFERENCE")
+	for _, o := range opps {
+		diff := usd(o.DeltaUSD)
+		if o.MonthlyDeltaUSD > 0 {
+			diff = fmt.Sprintf("%s (~%s/mo)", usd(o.DeltaUSD), usd(o.MonthlyDeltaUSD))
+		}
+		fmt.Fprintf(w, "%-28s %-8s %5d %9s %11s  %s\n",
+			truncate(o.Workflow, 28), o.Platform, o.Jobs, usd(o.CurrentUSD), usd(o.OnLinuxUSD), diff)
+	}
+	fmt.Fprintln(w, "\nThese are not recommendations. Jobs that genuinely need macOS or Windows")
+	fmt.Fprintln(w, "should stay there -- this only shows what that choice costs.")
 }
 
 // usd keeps cents visible for the small numbers one workflow produces without
