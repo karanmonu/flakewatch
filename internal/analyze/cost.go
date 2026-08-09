@@ -1,0 +1,119 @@
+package analyze
+
+import (
+	"time"
+
+	"github.com/karanmonu/flakewatch/internal/gh"
+	"github.com/karanmonu/flakewatch/internal/pricing"
+)
+
+// RunCostUSD estimates what a workflow run's jobs cost at published rates.
+//
+// The arithmetic that matters: GitHub rounds each *job* up to the next whole
+// minute, so a run's cost is the sum over its jobs of ceil(job duration), not
+// the rounded total of the run. A run of ten 30-second jobs bills ten minutes,
+// not five, and the gap widens the wider a matrix fans out.
+func RunCostUSD(jobs []gh.Job) float64 {
+	var total float64
+	for _, j := range jobs {
+		runner := pricing.Resolve(j.Labels)
+		if !runner.Known {
+			// Self-hosted, or a label we have no published rate for. Skipping
+			// is right in both cases: "not billed" and "we don't know" are both
+			// wrong to record as a positive number.
+			continue
+		}
+		total += float64(pricing.CeilMinutes(j.DurationMS())) * runner.USDPerMinute
+	}
+	return total
+}
+
+// CostSummary is the money view of an analysis.
+type CostSummary struct {
+	// TotalUSD is the estimated spend across every run examined.
+	TotalUSD float64 `json:"total_usd"`
+	// MonthlyUSD extrapolates TotalUSD to 30 days using the observed window.
+	// Zero when the window is too short to extrapolate honestly.
+	MonthlyUSD float64 `json:"monthly_usd"`
+	// WindowDays spans the oldest to newest run examined.
+	WindowDays float64 `json:"window_days"`
+	// RunsPriced is how many runs contributed to TotalUSD.
+	RunsPriced int `json:"runs_priced"`
+	// RunsMissingJobs is how many runs had no job data available.
+	RunsMissingJobs int `json:"runs_missing_jobs"`
+	// SelfHostedJobs counts jobs skipped because they ran on self-hosted
+	// runners, which GitHub does not currently bill.
+	SelfHostedJobs int `json:"self_hosted_jobs"`
+	// UnknownRunnerJobs counts jobs skipped because their runner label had no
+	// published rate. A non-zero value means TotalUSD is an undercount.
+	UnknownRunnerJobs int `json:"unknown_runner_jobs"`
+}
+
+// minWindowForExtrapolation is the shortest observed window we will scale to a
+// monthly figure. Below this, one busy afternoon dominates and produces a
+// number that looks authoritative and is not.
+const minWindowForExtrapolation = 24 * time.Hour
+
+// SummarizeCost prices a set of runs and attributes spend per workflow.
+//
+// It fills in the CostUSD field of each workflow stat and returns the
+// repository-level summary.
+func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats) CostSummary {
+	costByWorkflow := make(map[string]float64, len(stats))
+
+	var (
+		total          float64
+		priced         int
+		selfHosted     int
+		unknownRunners int
+		oldest, newest time.Time
+	)
+
+	for _, r := range runs {
+		runJobs, ok := jobs.ByRun[r.ID]
+		if !ok {
+			continue
+		}
+		cost := RunCostUSD(runJobs)
+		costByWorkflow[r.Name] += cost
+		total += cost
+		priced++
+
+		for _, j := range runJobs {
+			switch runner := pricing.Resolve(j.Labels); {
+			case runner.SelfHosted:
+				selfHosted++
+			case !runner.Known:
+				unknownRunners++
+			}
+		}
+
+		if oldest.IsZero() || r.RunStartedAt.Before(oldest) {
+			oldest = r.RunStartedAt
+		}
+		if r.RunStartedAt.After(newest) {
+			newest = r.RunStartedAt
+		}
+	}
+
+	for i := range stats {
+		stats[i].CostUSD = costByWorkflow[stats[i].Name]
+	}
+
+	summary := CostSummary{
+		TotalUSD:          total,
+		RunsPriced:        priced,
+		RunsMissingJobs:   jobs.Missing,
+		SelfHostedJobs:    selfHosted,
+		UnknownRunnerJobs: unknownRunners,
+	}
+
+	if window := newest.Sub(oldest); window > 0 {
+		summary.WindowDays = window.Hours() / 24
+		if window >= minWindowForExtrapolation {
+			summary.MonthlyUSD = total * (30 * 24 * float64(time.Hour) / float64(window))
+		}
+	}
+	return summary
+}
+
