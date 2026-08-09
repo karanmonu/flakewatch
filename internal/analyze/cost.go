@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"sort"
 	"time"
 
 	"github.com/karanmonu/flakewatch/internal/gh"
@@ -47,6 +48,12 @@ type CostSummary struct {
 	// UnknownRunnerJobs counts jobs skipped because their runner label had no
 	// published rate. A non-zero value means TotalUSD is an undercount.
 	UnknownRunnerJobs int `json:"unknown_runner_jobs"`
+	// UnknownLabels lists the distinct labels behind UnknownRunnerJobs.
+	//
+	// Naming them rather than only counting them means the tool reports its own
+	// blind spots: anyone can read the list and open an issue, and it is the
+	// fastest way to find rates missing from the table.
+	UnknownLabels []string `json:"unknown_labels,omitempty"`
 }
 
 // minWindowForExtrapolation is the shortest observed window we will scale to a
@@ -68,6 +75,7 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		unknownRunners int
 		oldest, newest time.Time
 	)
+	unknownLabels := make(map[string]struct{})
 
 	for _, r := range runs {
 		runJobs, ok := jobs.ByRun[r.ID]
@@ -85,6 +93,13 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 				selfHosted++
 			case !runner.Known:
 				unknownRunners++
+				label := runner.Label
+				if label == "" {
+					// A job with no labels at all. Recording it as an empty
+					// string would hide it in the report.
+					label = "(no labels reported)"
+				}
+				unknownLabels[label] = struct{}{}
 			}
 		}
 
@@ -100,12 +115,19 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		stats[i].CostUSD = costByWorkflow[stats[i].Name]
 	}
 
+	labels := make([]string, 0, len(unknownLabels))
+	for l := range unknownLabels {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels) // map order is random; a stable report is diffable
+
 	summary := CostSummary{
 		TotalUSD:          total,
 		RunsPriced:        priced,
 		RunsMissingJobs:   jobs.Missing,
 		SelfHostedJobs:    selfHosted,
 		UnknownRunnerJobs: unknownRunners,
+		UnknownLabels:     labels,
 	}
 
 	if window := newest.Sub(oldest); window > 0 {
@@ -116,4 +138,3 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 	}
 	return summary
 }
-
