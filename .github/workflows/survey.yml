@@ -4,7 +4,8 @@
 #
 # Public repositories' Actions history is public, so GITHUB_TOKEN is here for
 # the rate limit rather than for access. Each repo costs about 51 requests at
-# -runs 50, which keeps the whole survey inside the hourly budget.
+# -runs 200. History is cached between dispatches via actions/cache, so the
+# first survey pays full price and later ones widen the windows almost free.
 name: Survey
 
 on:
@@ -18,6 +19,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+
+      # The survey's own dogfooding of the history cache. A runner is fresh
+      # every dispatch, so without this the survey re-pays for every run it has
+      # ever measured and each window is capped at whatever -runs 200 reaches
+      # in one go. Restoring it means each dispatch adds a day for the price of
+      # that day's new runs, and after a week the table covers a real week.
+      - uses: actions/cache@v4
+        with:
+          path: .fwcache
+          key: flakewatch-survey-${{ github.run_id }}
+          restore-keys: flakewatch-survey-
+
       - name: Analyze several public repositories
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -35,6 +48,6 @@ jobs:
             vitejs/vite
           do
             echo "::group::$repo"
-            /tmp/flakewatch -repo "$repo" -runs 50 -since 30d -cost || echo "(failed for $repo)"
+            /tmp/flakewatch -repo "$repo" -runs 200 -since 30d -cost -cache-dir "$GITHUB_WORKSPACE/.fwcache" || echo "(failed for $repo)"
             echo "::endgroup::"
           done

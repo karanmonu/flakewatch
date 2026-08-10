@@ -18,6 +18,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,6 +28,7 @@ import (
 	"github.com/karanmonu/flakewatch/internal/gh"
 	"github.com/karanmonu/flakewatch/internal/pricing"
 	"github.com/karanmonu/flakewatch/internal/report"
+	"github.com/karanmonu/flakewatch/internal/store"
 )
 
 // version is set at build time by goreleaser via ldflags. It stays "dev" for
@@ -42,6 +44,8 @@ func main() {
 	zombieHours := flag.Float64("zombie-hours", 6, "runs in progress longer than this are flagged as zombies")
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
 	ratesFile := flag.String("rates", "", "JSON file of runner label to USD per minute, for self-hosted and unrecognised labels")
+	noCache := flag.Bool("no-cache", false, "do not read or write the local run history")
+	cacheDir := flag.String("cache-dir", "", "where to keep local run history (default: your OS cache directory)")
 	concurrency := flag.Int("concurrency", 8, "parallel requests when fetching job data")
 	jsonOut := flag.Bool("json", false, "emit JSON instead of a terminal report")
 	markdownOut := flag.Bool("markdown", false, "emit a Markdown pull request comment")
@@ -100,6 +104,30 @@ func main() {
 
 	client := gh.NewClient(token)
 
+	// History outlives the process. A completed run never changes, so jobs
+	// fetched by any earlier invocation are still correct, and the window a
+	// report can cover becomes the union of every run ever fetched rather than
+	// whatever this one invocation could afford.
+	var history *store.Cache
+	if !*noCache {
+		dir := *cacheDir
+		if dir == "" {
+			if d, err := store.DefaultDir(); err == nil {
+				dir = d
+			}
+		}
+		if dir != "" {
+			var err error
+			history, err = store.Open(dir, *repo)
+			if err != nil {
+				// A broken cache must never stop a report. It is an
+				// optimisation; the API is the source of truth.
+				fmt.Fprintf(os.Stderr, "warning: ignoring local history: %v\n", err)
+				history = nil
+			}
+		}
+	}
+
 	var (
 		workflowRuns   []gh.WorkflowRun
 		windowComplete = true
@@ -115,6 +143,22 @@ func main() {
 		os.Exit(exitCode(err))
 	}
 
+	// Runs this process did not fetch, but an earlier one did. Merged before
+	// analysis so every table sees the same, wider history.
+	var fromHistory int
+	if history != nil {
+		workflowRuns, fromHistory = mergeHistory(workflowRuns, history, window)
+		// History can complete a window the API list alone could not reach.
+		// Recomputing rather than trusting the earlier flag is the difference
+		// between "we could only see 13 days" and an honest 30.
+		if fromHistory > 0 && len(workflowRuns) > 0 {
+			oldest := workflowRuns[len(workflowRuns)-1].RunStartedAt
+			if !oldest.IsZero() && !oldest.After(time.Now().Add(-window)) {
+				windowComplete = true
+			}
+		}
+	}
+
 	result := analyze.Analyze(workflowRuns, analyze.Options{
 		ZombieHours:  *zombieHours,
 		ChangedPaths: splitPaths(*changed),
@@ -126,16 +170,34 @@ func main() {
 	}
 
 	if *withCost {
+		// Only ask the API for runs whose jobs are not already on disk. This is
+		// the whole saving: one request per run, and a run already measured is
+		// measured forever.
 		ids := make([]int64, 0, len(workflowRuns))
 		for _, r := range workflowRuns {
+			if history != nil && history.Has(r.ID) {
+				continue
+			}
 			ids = append(ids, r.ID)
 		}
+		// Runs priced without asking GitHub. Counted separately from
+		// fromHistory, which is runs added to the *window*: on a repeat run of
+		// the same command the window does not grow at all, yet nearly every
+		// run is served from disk. Reporting only the first number meant a
+		// report assembled almost entirely from a local file read exactly like
+		// one fetched fresh.
+		fromCache := len(workflowRuns) - len(ids)
 		jobs, err := client.RunAllJobs(ctx, *repo, ids, *concurrency)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching job data: %v\n", err)
 			os.Exit(exitCode(err))
 		}
+		if history != nil {
+			jobs = mergeJobs(jobs, workflowRuns, history)
+		}
 		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows, rates)
+		result.Cost.RunsFromHistory = fromHistory
+		result.Cost.RunsFromCache = fromCache
 		if window > 0 {
 			result.Cost.RequestedWindowDays = window.Hours() / 24
 			result.Cost.WindowTruncated = !windowComplete
@@ -144,6 +206,15 @@ func main() {
 				need := float64(result.Cost.RunsPriced) * result.Cost.RequestedWindowDays / result.Cost.WindowDays
 				result.Cost.RunsForFullWindow = int(math.Ceil(need))
 			}
+		}
+	}
+
+	// Written before the report so an interrupt while printing still keeps the
+	// history this run paid for. A failure here costs nothing but the saving:
+	// warn on stderr and let the report go out on stdout regardless.
+	if history != nil {
+		if err := history.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save local history: %v\n", err)
 		}
 	}
 
@@ -225,4 +296,69 @@ func exitCode(err error) int {
 		return 130
 	}
 	return 1
+}
+
+// mergeHistory folds stored runs into the freshly listed ones.
+//
+// The API list is authoritative for what exists now; history contributes runs
+// that scrolled past whatever -runs could afford. Returns the union, newest
+// first, and how many came only from history.
+//
+// Without -since there is no window to fill, so history is used to avoid
+// re-fetching jobs but not to widen the sample. Silently reporting on 900 runs
+// when the user asked for 200 would be a different measurement than the one
+// they requested, and a number that changes because of a file on disk is worse
+// than a number that is merely small.
+func mergeHistory(fetched []gh.WorkflowRun, history *store.Cache, window time.Duration) ([]gh.WorkflowRun, int) {
+	if window <= 0 {
+		return fetched, 0
+	}
+
+	seen := make(map[int64]struct{}, len(fetched))
+	for _, r := range fetched {
+		seen[r.ID] = struct{}{}
+	}
+
+	var added int
+	for _, r := range history.Runs(time.Now().Add(-window)) {
+		if _, ok := seen[r.ID]; ok {
+			continue
+		}
+		fetched = append(fetched, r)
+		seen[r.ID] = struct{}{}
+		added++
+	}
+
+	sort.Slice(fetched, func(i, j int) bool {
+		if !fetched[i].RunStartedAt.Equal(fetched[j].RunStartedAt) {
+			return fetched[i].RunStartedAt.After(fetched[j].RunStartedAt)
+		}
+		return fetched[i].ID > fetched[j].ID
+	})
+	return fetched, added
+}
+
+// mergeJobs fills in job data that came from disk rather than the API, and
+// records anything newly fetched.
+//
+// Runs whose jobs are in neither place stay counted as missing, exactly as
+// before: a run whose logs aged out is excluded from totals rather than priced
+// at zero.
+func mergeJobs(jobs gh.JobsResult, runs []gh.WorkflowRun, history *store.Cache) gh.JobsResult {
+	if jobs.ByRun == nil {
+		jobs.ByRun = make(map[int64][]gh.Job)
+	}
+	for _, r := range runs {
+		if fetched, ok := jobs.ByRun[r.ID]; ok {
+			history.Put(r, fetched)
+			continue
+		}
+		if stored, ok := history.Jobs(r.ID); ok {
+			// Not a correction to jobs.Missing: that counts 404s among the runs
+			// actually requested, and a cached run was never requested, so it
+			// was never in that tally to begin with.
+			jobs.ByRun[r.ID] = stored
+		}
+	}
+	return jobs
 }

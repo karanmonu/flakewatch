@@ -79,20 +79,29 @@ func findStepCosts(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor floa
 			runner := pricing.ResolveWith(j.Labels, rates)
 
 			for _, s := range j.Steps {
-				d := s.Duration()
-				if d == 0 {
-					// Either it never ran, or it finished inside a second --
-					// step timestamps have no sub-second component. Both are
-					// noise at this resolution.
-					continue
-				}
 				key := stepKey{workflow: workflowKey(r), step: s.Name}
 				t := tally[key]
 				if t == nil {
 					t = &stepTally{}
 					tally[key] = t
 				}
+
+				// Counted before the duration check, deliberately. Step
+				// timestamps have no sub-second component, so anything that
+				// finishes inside a second measures as zero -- and an earlier
+				// version skipped those entirely, which made this a count of
+				// executions lasting at least a second while the column was
+				// labelled as a count of executions. Against gohugoio/hugo that
+				// showed "Install Go" running 154 times and its own post step
+				// 86, an impossible pair that was really 68 sub-second
+				// teardowns being dropped. Undercounting quietly is the exact
+				// failure this tool exists to avoid.
 				t.executions++
+
+				d := s.Duration()
+				if d == 0 {
+					continue
+				}
 				t.seconds += d.Seconds()
 				if runner.Known {
 					// Pro rata, not rounded up: rounding every step to a whole

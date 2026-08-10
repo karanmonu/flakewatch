@@ -87,10 +87,12 @@ func TestStepCostsCountMatrixLegsSeparately(t *testing.T) {
 	approx(t, got[0].Seconds, 48)
 }
 
-func TestStepCostsIgnoreSubSecondSteps(t *testing.T) {
+func TestSubSecondStepsAreCountedButMeasureZero(t *testing.T) {
 	// Step timestamps have no sub-second component, so a step that started and
-	// finished in the same second is indistinguishable from one that never ran.
-	// Verified against the live API: "Complete job" reports as 0s.
+	// finished in the same second measures as zero. It still ran, and the RAN
+	// column says how many times a step ran -- dropping these made that column
+	// silently mean "ran for at least a second", which showed up against
+	// gohugoio/hugo as "Install Go" 154 and "Post Install Go" 86.
 	runs := []gh.WorkflowRun{{ID: 1, Name: "CI", Path: ".github/workflows/ci.yml"}}
 	jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{
 		1: {jobWithSteps([]string{"ubuntu-latest"}, epoch, time.Minute,
@@ -100,8 +102,21 @@ func TestStepCostsIgnoreSubSecondSteps(t *testing.T) {
 	}}
 
 	got := findStepCosts(runs, jobs, 0, nil)
-	if len(got) != 1 || got[0].Step != "Test" {
-		t.Fatalf("want only the measurable step, got %+v", got)
+
+	var complete *StepCost
+	for i := range got {
+		if got[i].Step == "Complete job" {
+			complete = &got[i]
+		}
+	}
+	if complete == nil {
+		t.Fatalf("a sub-second step still ran and must still be counted, got %+v", got)
+	}
+	if complete.Executions != 1 {
+		t.Fatalf("want the execution counted, got %d", complete.Executions)
+	}
+	if complete.Seconds != 0 || complete.USD != 0 {
+		t.Fatalf("want no measurable time attributed to it, got %+v", *complete)
 	}
 }
 

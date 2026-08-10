@@ -57,6 +57,16 @@ type CostSummary struct {
 	// UnknownRunnerJobs counts jobs skipped because their runner label had no
 	// published rate. A non-zero value means TotalUSD is an undercount.
 	UnknownRunnerJobs int `json:"unknown_runner_jobs"`
+	// RunsFromHistory counts runs that came from the local cache rather than
+	// this invocation's API calls. Disclosed because a total assembled partly
+	// from stored history covers a longer window than the requests made would
+	// suggest, and a reader comparing the two should not have to guess why.
+	RunsFromHistory int `json:"runs_from_history,omitempty"`
+	// RunsFromCache counts runs priced from stored job data instead of a fresh
+	// API request. Distinct from RunsFromHistory: this is requests avoided,
+	// that is window widened, and a repeated command produces the first
+	// without the second.
+	RunsFromCache int `json:"runs_from_cache,omitempty"`
 	// RunsSkippedForBudget counts runs left unfetched to protect the shared API
 	// rate limit. Non-zero means the sample is smaller than requested.
 	RunsSkippedForBudget int `json:"runs_skipped_for_budget"`

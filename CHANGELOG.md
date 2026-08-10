@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+**The Action can use the history too**, via a new `cache-dir` input and an
+`actions/cache` step. Without it the Action was the one place the cache could
+not help — a fresh runner every time, re-paying for the same history on every
+pull request — which is backwards, because Actions is exactly where the shared
+request budget makes a month unreachable.
+
+**`RAN` counts every execution again.** Steps finishing inside a second measure
+as zero (step timestamps have no sub-second component) and were being dropped
+from the count entirely, so the column silently meant "ran for at least a
+second". Against `gohugoio/hugo` that produced `Install Go` 154 against its own
+post step 86 — an impossible pair that was 68 dropped teardowns.
+
+
+**History now outlives the process** ([#3](https://github.com/karanmonu/flakewatch/issues/3)).
+Runs and their job data are kept in a local append-only file, so a run measured
+once is measured forever and `-since` can cover a window no single invocation
+could afford.
+
+The arithmetic that makes this necessary: measured against `gohugoio/hugo`,
+`-runs 200` bought 13.5 days and reaching 30 needed 445 requests. Inside GitHub
+Actions the automatic token allows roughly 1,000 requests an hour for the whole
+repository, shared with every other workflow — so a month of history was not
+merely expensive there, it was structurally out of reach. Run daily and a real
+month accumulates for the price of each day's new runs.
+
+Safe because a completed run never changes: its jobs are finished, their
+durations fixed, the runner labels they billed against settled. Only completed
+runs are stored, for the same reason.
+
+The report says how many runs came from history rather than from this
+invocation's API calls, because a total assembled partly from stored history
+covers more time than the requests made would suggest, and the reader should not
+have to work that out. `-no-cache` disables it; `-cache-dir` moves it.
+
+Without `-since` history is used to skip re-fetching but **not** to widen the
+sample — silently reporting on 900 runs when `-runs 200` was asked for is a
+different measurement than the one requested.
+
+
+**A workflow that fails every time is no longer reported as stable.** The
+flakiness score is zero for something consistently broken — that is what the
+`4p(1-p)` term is for — but zero fell through to the "stable" branch, so a
+workflow failing 100% of its runs came out with a green dot and a clean bill of
+health. Found by pointing v0.5.0 at `gohugoio/hugo`, where a stale-issue
+workflow had failed all thirteen times in the window and the report called it
+fine. "Not flaky" and "not broken" are different claims and the output now
+keeps them apart, with `⛔ always failing` above a 90% failure rate.
+
 ## v0.5.0
 
 **You can supply your own runner rates** ([#15](https://github.com/karanmonu/flakewatch/issues/15)).
