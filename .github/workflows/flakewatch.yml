@@ -1,0 +1,25 @@
+# flakewatch running against itself. If the Action cannot comment on this
+# repository's own pull requests, it cannot comment on anyone else's.
+name: flakewatch
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required so the Action can diff base against head to see whether
+          # any workflow files changed.
+          fetch-depth: 0
+      - uses: ./
+        with:
+          runs: "100"
+
