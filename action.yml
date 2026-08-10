@@ -8,7 +8,10 @@ branding:
 
 inputs:
   github-token:
-    description: Token used to read Actions data and post the comment. Needs actions:read and pull-requests:write.
+    description: >-
+      Token used to read Actions data and post the comment. Needs actions:read
+      and pull-requests:write. Note that pull_request runs from forks get a
+      read-only token, so the comment step is skipped there.
     required: false
     default: ${{ github.token }}
   runs:
@@ -18,7 +21,7 @@ inputs:
   version:
     description: flakewatch release to use.
     required: false
-    default: v0.1.0
+    default: v0.2.0
   always-comment:
     description: >-
       Comment on every pull request rather than only those touching
@@ -38,20 +41,20 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
         if [ "$ALWAYS" = "true" ]; then
           echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
-        # Needs the base commit present; actions/checkout with fetch-depth: 0.
+        # Requires the base commit locally: check out with fetch-depth: 0.
         if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
-          echo "::warning::base commit not available - check out with fetch-depth: 0 to enable workflow-change detection. Commenting anyway."
+          echo "::warning::Base commit not available. Check out with fetch-depth: 0 to enable workflow-change detection. Commenting anyway."
           echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
         if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -q '^\.github/workflows/'; then
           echo "relevant=true" >> "$GITHUB_OUTPUT"
         else
           echo "relevant=false" >> "$GITHUB_OUTPUT"
-          echo "No workflow files changed; skipping."
+          echo "No workflow files changed; nothing to report."
         fi
 
     - name: Install flakewatch
@@ -61,33 +64,43 @@ runs:
         VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        curl -fsSL "https://github.com/karanmonu/flakewatch/releases/download/${VERSION}/flakewatch_linux_amd64.tar.gz" \
-          | tar xz -C /tmp flakewatch
+        url="https://github.com/karanmonu/flakewatch/releases/download/${VERSION}/flakewatch_linux_amd64.tar.gz"
+        curl -fsSL "$url" | tar xz -C /tmp flakewatch
         chmod +x /tmp/flakewatch
+        /tmp/flakewatch -version
 
-    - name: Analyze and comment
+    - name: Analyze
       if: steps.changed.outputs.relevant == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        GH_TOKEN: ${{ inputs.github-token }}
         RUNS: ${{ inputs.runs }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -markdown > /tmp/flakewatch-comment.md
+        cat /tmp/flakewatch-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on the pull request
+      if: steps.changed.outputs.relevant == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
       run: |
         set -euo pipefail
-        /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -cost -markdown > /tmp/comment.md
-        cat /tmp/comment.md >> "$GITHUB_STEP_SUMMARY"
+        # Build the JSON body with jq rather than relying on shell quoting -
+        # the comment contains backticks, quotes and newlines.
+        jq -Rs '{body: .}' /tmp/flakewatch-comment.md > /tmp/flakewatch-payload.json
 
-        # Update our previous comment rather than adding another one each push.
         existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq 'map(select(.body | contains("<!-- flakewatch:report -->"))) | .[0].id // empty')
+          --jq 'map(select(.body | startswith("<!-- flakewatch:report -->"))) | .[0].id // empty')
 
         if [ -n "$existing" ]; then
-          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@/tmp/comment.md >/dev/null
-          echo "Updated comment $existing"
+          gh api -X PATCH "repos/$REPO/issues/comments/$existing" --input /tmp/flakewatch-payload.json >/dev/null
+          echo "Updated existing comment $existing"
         else
-          gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@/tmp/comment.md >/dev/null
+          gh api -X POST "repos/$REPO/issues/$PR/comments" --input /tmp/flakewatch-payload.json >/dev/null
           echo "Posted a new comment"
         fi
-
