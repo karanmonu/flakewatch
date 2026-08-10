@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**Step costs are split by platform**, which is what joins them to the platform
+table. Previously the report said Windows was $39.56 of hugo's $65.97, and
+separately that `Test` was 3,237 minutes, and left the reader to guess those
+were the same jobs. "Which step is the expensive Windows one" is the actionable
+question, and it was answerable from data already fetched but not from anything
+printed. Matrix legs on the same OS still merge; legs on different platforms do
+not, because they differ by up to tenfold in price.
+
+**`golangci-lint` runs in CI.**
+
+
+## Unreleased
+
 **The Action can use the history too**, via a new `cache-dir` input and an
 `actions/cache` step. Without it the Action was the one place the cache could
 not help — a fresh runner every time, re-paying for the same history on every

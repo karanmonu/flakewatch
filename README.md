@@ -178,14 +178,17 @@ concurrency:
 
 ```
 Where the time goes, by step:
-WORKFLOW                 STEP                               RAN   MINUTES      SHARE
-Test                     Test                                78      3237     $32.37
-Test                     Check                               72      2794     $16.76
-Test                     Run staticcheck                     76      1203      $7.22
-Test                     Post Install Go                     86       363      $3.59
-Build Docker image       Build and push                      59       389      $2.34
-Test                     Free Disk Space (Ubuntu)            78       177      $1.06
+WORKFLOW               STEP                       PLATFORM     RAN   MINUTES      SHARE
+Test                   Test                       windows       78      3237     $32.37
+Test                   Check                      linux         72      2794     $16.76
+Test                   Run staticcheck            linux         76      1203      $7.22
+Test                   Post Install Go            linux         86       363      $3.59
+Build Docker image     Build and push             linux         59       389      $2.34
 ```
+
+The `PLATFORM` column is what joins this to the table above — `Test` is the
+Windows leg, `Check` is Linux, and that is the difference between "the Test
+workflow is expensive" and "one step on Windows is half the bill".
 
 `Post Install Go` is the interesting row: $3.59 of teardown and cache upload
 that no one would have gone looking for, sitting in plain sight once the

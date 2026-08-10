@@ -254,12 +254,18 @@ func writeStepCosts(w io.Writer, steps []analyze.StepCost) {
 	}
 
 	fmt.Fprintf(w, "\nWhere the time goes, by step:\n")
-	fmt.Fprintf(w, "%-24s %-30s %7s %9s %10s\n", "WORKFLOW", "STEP", "RAN", "MINUTES", "SHARE")
+	fmt.Fprintf(w, "%-22s %-26s %-8s %7s %9s %10s\n", "WORKFLOW", "STEP", "PLATFORM", "RAN", "MINUTES", "SHARE")
 	for _, s := range steps {
-		fmt.Fprintf(w, "%-24s %-30s %7d %9.0f %10s\n",
-			truncate(s.Workflow, 24), truncate(s.Step, 30), s.Executions, s.Seconds/60, usd(s.USD))
+		platform := s.Platform
+		if platform == "" {
+			platform = "-"
+		}
+		fmt.Fprintf(w, "%-22s %-26s %-8s %7d %9.0f %10s\n",
+			truncate(s.Workflow, 22), truncate(s.Step, 26), platform, s.Executions, s.Seconds/60, usd(s.USD))
 	}
-	fmt.Fprintln(w, "\nRAN counts every execution; a step that finishes inside a second measures")
+	fmt.Fprintln(w, "\nPLATFORM is what joins this to the table above: the same step on Windows")
+	fmt.Fprintln(w, "and on Linux is two rows, because those differ by a factor of ten in price.")
+	fmt.Fprintln(w, "RAN counts every execution; a step that finishes inside a second measures")
 	fmt.Fprintln(w, "as zero minutes because step timestamps have no sub-second component.")
 	fmt.Fprintln(w, "GitHub bills the job, not the step, so these are each step's share of its")
 	fmt.Fprintln(w, "job's cost and they sum to slightly less than the workflow totals above --")
