@@ -16,7 +16,7 @@ func TestOpportunitiesPriceTheLinuxCounterfactual(t *testing.T) {
 		{Labels: []string{"ubuntu-latest"}, StartedAt: start, CompletedAt: start.Add(10 * time.Minute)},
 	}}}
 
-	opps := findOpportunities(runs, jobs, 0)
+	opps := findOpportunities(runs, jobs, 0, nil)
 
 	if len(opps) != 1 {
 		t.Fatalf("expected only the macOS spend to be reported, got %d entries", len(opps))
@@ -46,7 +46,7 @@ func TestLinuxOnlyRepoHasNoOpportunities(t *testing.T) {
 		{Labels: []string{"ubuntu-latest"}, StartedAt: start, CompletedAt: start.Add(time.Hour)},
 	}}}
 
-	if opps := findOpportunities(runs, jobs, 0); len(opps) != 0 {
+	if opps := findOpportunities(runs, jobs, 0, nil); len(opps) != 0 {
 		t.Errorf("expected no opportunities for a Linux-only repo, got %d", len(opps))
 	}
 }
@@ -61,7 +61,7 @@ func TestUnknownAndSelfHostedJobsAreNotOpportunities(t *testing.T) {
 		{Labels: []string{"self-hosted", "windows"}, StartedAt: start, CompletedAt: start.Add(time.Hour)},
 	}}}
 
-	if opps := findOpportunities(runs, jobs, 0); len(opps) != 0 {
+	if opps := findOpportunities(runs, jobs, 0, nil); len(opps) != 0 {
 		t.Errorf("expected no opportunities from unpriceable jobs, got %+v", opps)
 	}
 }
@@ -77,7 +77,7 @@ func TestOpportunitiesSortByLargestDifference(t *testing.T) {
 		2: {{Labels: []string{"macos-latest"}, StartedAt: start, CompletedAt: start.Add(30 * time.Minute)}},
 	}}
 
-	opps := findOpportunities(runs, jobs, 0)
+	opps := findOpportunities(runs, jobs, 0, nil)
 
 	if len(opps) != 2 {
 		t.Fatalf("expected 2 opportunities, got %d", len(opps))
@@ -96,11 +96,11 @@ func TestMonthlyDeltaUsesTheSuppliedFactor(t *testing.T) {
 
 	// A zero factor means the window was too short to extrapolate; no monthly
 	// figure should be invented.
-	if opps := findOpportunities(runs, jobs, 0); opps[0].MonthlyDeltaUSD != 0 {
+	if opps := findOpportunities(runs, jobs, 0, nil); opps[0].MonthlyDeltaUSD != 0 {
 		t.Errorf("MonthlyDeltaUSD = %v, want 0 for an unextrapolatable window", opps[0].MonthlyDeltaUSD)
 	}
 
-	opps := findOpportunities(runs, jobs, 10)
+	opps := findOpportunities(runs, jobs, 10, nil)
 	if math.Abs(opps[0].MonthlyDeltaUSD-opps[0].DeltaUSD*10) > 1e-9 {
 		t.Errorf("MonthlyDeltaUSD = %v, want %v", opps[0].MonthlyDeltaUSD, opps[0].DeltaUSD*10)
 	}

@@ -82,3 +82,155 @@ Machine-readable, for dashboards or CI gates:
 flakewatch -repo owner/name -cost -json | jq '.cost'
 ```
 
+## Use it as a GitHub Action
+
+Comment the same numbers on any pull request that touches a workflow file:
+
+```yaml
+name: flakewatch
+on: pull_request
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to see which files the PR changed
+      - uses: karanmonu/flakewatch@v0.5.0
+```
+
+It stays quiet by default: no workflow files changed, no comment. The comment is scoped to the workflows *that* pull request edits, and it edits its own comment rather than adding a new one on every push.
+
+| Input | Default | What it does |
+|---|---|---|
+| `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
+| `runs` | `50` | Recent runs to analyze. One API request each |
+| `version` | `v0.5.0` | Release to download |
+| `always-comment` | `false` | Comment on every PR, not just workflow changes |
+
+Two properties it holds to, because a reporting tool that breaks your pipeline is worse than no reporting tool:
+
+- **It never fails your build.** Every failure path — an unreachable release asset, a bad token, a fork's read-only token — becomes a workflow annotation and a green check.
+- **It leaves your API budget alone.** Inside Actions the `GITHUB_TOKEN` allows roughly 1,000 requests an hour, *shared with every other workflow in the repository*. flakewatch reads its remaining budget from the response headers, keeps 100 requests in reserve, and shrinks the sample rather than spending the lot. A truncated analysis says so in the comment.
+
+## Runs that kept going after a newer commit replaced them
+
+Someone pushes to a pull request branch, CI starts, they push again two minutes later. Without a concurrency group the first run carries on to the end, and every minute after that second push buys a result for a commit nobody will look at.
+
+```
+Runs that kept going after a newer commit replaced them:
+WORKFLOW                      RUNS   MINUTES        COST  PER MONTH
+CI                              14        86       $0.52  ~$4.83/mo
+```
+
+Counted from the moment the newer run started, not the whole run — the minutes before that were buying a result someone still wanted. Reporting the whole run would be the larger, more impressive number and it would be wrong.
+
+Pull request events only. Two overlapping runs on the default branch are one build per commit, which is how you find out which commit broke something; flagging that would be wrong on nearly every repository that exists.
+
+This is the one table here phrased as a defect rather than an observation, because there is no reading under which a finished run for a deleted commit was working as intended. The fix is four lines:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+`cancel-in-progress` is the load-bearing line. Without it the group queues the newer run behind the older one instead of replacing it.
+
+## Which part of the workflow
+
+"`Test` is 93% of the bill" is half an answer. The next question is always which part of `Test`, and until now the answer was to go and read the logs.
+
+```
+Where the time goes, by step:
+WORKFLOW                 STEP                               RAN   MINUTES      SHARE
+Test                     Test                               216      1841     $11.05
+Test                     Set up job                         216        58      $0.35
+Test                     Install dependencies               216        44      $0.26
+```
+
+The jobs endpoint already returns every step with its timestamps, in the same response the cost arithmetic was reading anyway, so this costs no extra API requests. Matrix legs count separately — a four-second step fanned out twelve ways is not a four-second step, and `RAN` is what shows you that.
+
+Read the money as a **share, not a charge**. GitHub bills the job, rounded up to the whole minute; a step is a slice of that. The steps sum to slightly less than the workflow totals, and the difference is the rounding.
+
+Step timestamps have no sub-second component, so anything that finishes inside a second reports as zero and is left out.
+
+## Runners the rate table has never heard of
+
+Self-hosted runners, organisation runner groups and larger runners carry labels somebody chose — `gpu-large`, `buildjet-8vcpu-ubuntu-2204` — and no lookup table will ever know what those cost. Those jobs used to be excluded and named, which made the total an undercount for exactly the repositories with the largest bill. Now you can tell it:
+
+```bash
+cat > rates.json <<'EOF'
+{
+  "gpu-large": 0.42,
+  "github-hosted-windows-x64-large": 0.064
+}
+EOF
+
+flakewatch -repo owner/name -cost -rates rates.json
+```
+
+Values are USD per minute. They win over both the published table and the self-hosted rule, so a machine you own gets priced at what it costs you, and a negotiated enterprise rate beats list price. Where several of a job's labels appear in the file, the longest one wins as the more specific description of the machine.
+
+When labels are still unpriced the report prints the file you would need with the labels already filled in, rather than only naming the gap.
+
+## How the cost is measured
+
+Costs come from the **jobs** endpoint, not the run timing endpoint. Two reasons, both found by calling the API rather than reading the docs:
+
+- timing reports zero billable time for public repositories, which GitHub does not bill. `grafana/k6` returns a literally empty `billable` object, so anything built on it silently reports $0 for every public repo.
+- timing reports only UBUNTU/MACOS/WINDOWS, so a 32-core runner is indistinguishable from a 2-core one. Job records carry the actual runner label.
+
+Billing rounds **each job** up to the whole minute, not the run. A run of ten 30-second jobs bills ten minutes, not five, and the gap widens the wider a matrix fans out — which is exactly where the money is.
+
+## How the flakiness score works
+
+```
+score = transition_rate × 4p(1-p)
+```
+
+`transition_rate` is pass/fail flips divided by (scored runs - 1); `p` is the failure rate. The `4p(1-p)` term peaks at `p = 0.5` and is zero at both extremes: a workflow that alternates outcomes is maximally flaky, one that always passes or always fails is not flaky at all.
+
+`RUNS` and `SCORED` are different numbers on purpose. Everything that ran costs money; only the runs that concluded success or failure say anything about flakiness. Cancelled runs belong in one column and not the other.
+
+Workflows with fewer than five scored runs get no score. Two runs that differ is one coin flip, and reporting that as maximal flakiness was a real bug.
+
+## What it will not do
+
+Jobs whose runner label has no published rate and no entry in your `-rates` file are excluded and **named in the output** rather than silently counted as free. A visible gap beats a confident wrong number.
+
+The platform table is an observation, not a recommendation. flakewatch can see that a workflow spends on macOS; it cannot see whether that workflow needs macOS.
+
+**No monthly projection from less than a week of measured history.** CI load is weekly-periodic — weekdays are busy, weekends are nearly dead — so a shorter window misstates the month by whenever you happened to run it. Scaling golangci-lint's 1.8 consecutive weekdays to 30 days produced "$143/month", which was an artefact of the sampling time rather than a measurement. Most rows in the table above get no monthly figure as a result. A missing number invites a second look; a wrong one does not.
+
+Scoring is workflow-level, so a flaky job inside a mostly-green workflow gets diluted.
+
+## Design notes
+
+No dependencies — stdlib only, so `go install` is instant and there is nothing to audit. Read-only: needs `actions:read`, never mutates anything. Reasoning in [docs/adr/](docs/adr/).
+
+A workflow is identified by its **file**, not its display name. Two files can both be `name: CI`, and a workflow can be renamed mid-window; keying on the name merges the first pair into one row and splits the second into two.
+
+CI runs flakewatch against this repository on every build, so a change that breaks against the real API fails the build rather than shipping.
+
+## Roadmap
+
+- [x] cost attribution per workflow
+- [x] macOS and Windows spend against the Linux equivalent
+- [x] GitHub Action mode: comment cost and flakiness on PRs
+- [x] time-window sampling (`-since 30d`) instead of a fixed run count
+- [x] user-supplied rates for unrecognised and self-hosted runner labels
+- [x] runs that kept going after a newer commit replaced them
+- [x] per-step cost attribution
+- [ ] job-level flakiness, not just workflow-level
+- [ ] duration regression detection (trend, not average)
+
+## License
+
+MIT

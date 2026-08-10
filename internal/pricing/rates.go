@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RatesSource is where the rate tables below came from.
@@ -17,6 +18,32 @@ const RatesSource = "https://docs.github.com/en/billing/reference/actions-runner
 
 // RatesRetrieved is the date the tables were last checked against the source.
 const RatesRetrieved = "2026-08-10"
+
+// StaleAfter is how long a hardcoded price list gets the benefit of the doubt.
+//
+// Six months is a guess, but an unguarded guess is worse: the failure mode of
+// a stale table is a confident number that is quietly wrong, which is the one
+// failure mode this tool exists to avoid. Saying "this data is nine months old"
+// costs a line and lets the reader decide.
+const StaleAfter = 180 * 24 * time.Hour
+
+// ratesRetrievedAt is RatesRetrieved parsed once. A malformed constant would be
+// a build-time mistake, so a zero time here means "treat it as unknown age"
+// rather than panicking in front of a user.
+var ratesRetrievedAt, _ = time.Parse("2006-01-02", RatesRetrieved)
+
+// RatesAge is how long ago the table was checked, or zero if that is unknown.
+func RatesAge(now time.Time) time.Duration {
+	if ratesRetrievedAt.IsZero() || now.Before(ratesRetrievedAt) {
+		return 0
+	}
+	return now.Sub(ratesRetrievedAt)
+}
+
+// RatesStale reports whether the table is old enough to warn about.
+func RatesStale(now time.Time) bool {
+	return RatesAge(now) > StaleAfter
+}
 
 // Standard GitHub-hosted runner rates, USD per minute.
 const (
@@ -57,22 +84,47 @@ type Runner struct {
 	// SelfHosted reports a self-hosted runner. GitHub does not currently bill
 	// for these, so zero here is a real zero rather than a gap.
 	SelfHosted bool
+	// UserSupplied reports that USDPerMinute came from the user's rate file
+	// rather than GitHub's published table. The report distinguishes the two,
+	// because "GitHub charges this" and "you told me this" carry different
+	// weight and blurring them would launder a guess into a published figure.
+	UserSupplied bool
 }
 
-// Resolve works out the rate for a job's runner labels.
+// Resolve works out the rate for a job's runner labels from published rates.
+func Resolve(labels []string) Runner { return ResolveWith(labels, nil) }
+
+// ResolveWith works out the rate for a job's runner labels, consulting a
+// user-supplied rate table first.
 //
 // A job carries every label it requested, so "ubuntu-latest" arrives as
 // ["ubuntu-latest"] and a self-hosted ARM box might arrive as
-// ["self-hosted", "linux", "arm64"]. Self-hosted wins over everything else:
-// if the job did not run on GitHub's infrastructure, no hosted rate applies.
-func Resolve(labels []string) Runner {
+// ["self-hosted", "linux", "arm64"].
+//
+// Order of precedence, and why:
+//
+//  1. The user's rate file. It beats both the published table and the
+//     self-hosted rule, because both of those are statements about what GitHub
+//     invoices and the rate file is a statement about what the machine costs.
+//     Someone who writes down what their GPU box costs an hour has better
+//     information than this program does, and overriding "ubuntu-latest" is a
+//     legitimate thing to want: an enterprise agreement is not list price.
+//  2. Self-hosted. Not billed by GitHub, so no hosted rate applies.
+//  3. The published table.
+func ResolveWith(labels []string, ov Overrides) Runner {
 	normalised := make([]string, 0, len(labels))
 	for _, l := range labels {
-		l = strings.ToLower(strings.TrimSpace(l))
+		normalised = append(normalised, strings.ToLower(strings.TrimSpace(l)))
+	}
+
+	if label, rate, ok := ov.lookup(normalised); ok {
+		return Runner{Label: label, USDPerMinute: rate, Known: true, UserSupplied: true}
+	}
+
+	for _, l := range normalised {
 		if l == "self-hosted" {
 			return Runner{Label: strings.Join(labels, ","), SelfHosted: true}
 		}
-		normalised = append(normalised, l)
 	}
 
 	for _, l := range normalised {

@@ -48,16 +48,31 @@ type platformSpend struct {
 //
 // monthlyFactor scales the window to 30 days, or is zero when the window was
 // too short to extrapolate honestly.
-func findOpportunities(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor float64) []Opportunity {
+func findOpportunities(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor float64, rates pricing.Overrides) []Opportunity {
 	spend := make(map[platformKey]*platformSpend)
+	// Same identity as everywhere else: the file, not the display name. Two
+	// files called "CI" are two workflows, and their macOS spend should not be
+	// added together under one row.
+	displayName := make(map[string]string)
 
 	for _, r := range runs {
+		displayName[workflowKey(r)] = r.Name
 		for _, j := range jobs.ByRun[r.ID] {
 			if j.DurationMS() == 0 {
 				continue
 			}
-			runner := pricing.Resolve(j.Labels)
+			runner := pricing.ResolveWith(j.Labels, rates)
 			if !runner.Known {
+				continue
+			}
+			// A user-priced runner is deliberately left out of this table. The
+			// table's whole claim is "the same minutes on a standard Linux
+			// runner would cost this instead", and that comparison is only
+			// meaningful between two GitHub-hosted SKUs. A self-hosted GPU box
+			// priced from someone's cloud bill is not a machine you swap for
+			// ubuntu-latest, and pricing the swap would invent a saving that
+			// does not exist.
+			if runner.UserSupplied {
 				continue
 			}
 			platform := pricing.PlatformOf(runner.Label)
@@ -66,7 +81,7 @@ func findOpportunities(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor 
 			}
 
 			minutes := pricing.CeilMinutes(j.DurationMS())
-			key := platformKey{workflow: r.Name, platform: platform}
+			key := platformKey{workflow: workflowKey(r), platform: platform}
 			s := spend[key]
 			if s == nil {
 				s = &platformSpend{}
@@ -82,7 +97,7 @@ func findOpportunities(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor 
 	for key, s := range spend {
 		onLinux := float64(s.minutes) * pricing.LinuxEquivalentUSDPerMinute
 		o := Opportunity{
-			Workflow:   key.workflow,
+			Workflow:   displayName[key.workflow],
 			Platform:   string(key.platform),
 			Jobs:       s.jobs,
 			CurrentUSD: s.usd,

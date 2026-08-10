@@ -76,8 +76,8 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 			top.Name, usd(top.CostUSD), top.CostUSD/c.TotalUSD*100)
 	}
 
-	b.WriteString("| Workflow | Runs | Fail % | Flakiness | Cost |\n")
-	b.WriteString("|---|---:|---:|---:|---:|\n")
+	b.WriteString("| Workflow | Runs | Scored | Fail % | Flakiness | Cost |\n")
+	b.WriteString("|---|---:|---:|---:|---:|---:|\n")
 	rows := maxRows
 	if n := len(touched); n > rows {
 		// A pull request touching seven workflows must still see all seven.
@@ -85,19 +85,19 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 	}
 	for i, s := range byCost {
 		if i >= rows {
-			fmt.Fprintf(&b, "| _…and %d more_ | | | | |\n", len(byCost)-rows)
+			fmt.Fprintf(&b, "| _…and %d more_ | | | | | |\n", len(byCost)-rows)
 			break
 		}
 		flaky := fmt.Sprintf("%.2f", s.FlakinessScore)
 		if !s.ScoreConfident {
-			flaky = fmt.Sprintf("– _(%d runs)_", s.Runs)
+			flaky = fmt.Sprintf("– _(%d scored)_", s.Scored)
 		}
 		name := fmt.Sprintf("`%s`", s.Name)
 		if s.Touched {
 			name += " ←"
 		}
-		fmt.Fprintf(&b, "| %s | %d | %.0f%% | %s | %s |\n",
-			name, s.Runs, s.FailureRate*100, flaky, usd(s.CostUSD))
+		fmt.Fprintf(&b, "| %s | %d | %d | %.0f%% | %s | %s |\n",
+			name, s.Runs, s.Scored, s.FailureRate*100, flaky, usd(s.CostUSD))
 	}
 	b.WriteString("\n")
 
@@ -121,13 +121,41 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 		b.WriteString("this only shows what that choice costs.\n\n")
 	}
 
+	if len(c.Superseded) > 0 {
+		b.WriteString("### Runs that kept going after a newer commit replaced them\n\n")
+		b.WriteString("| Workflow | Runs | Minutes | Cost | Per month |\n")
+		b.WriteString("|---|---:|---:|---:|---:|\n")
+		for i, o := range c.Superseded {
+			if i >= maxRows {
+				break
+			}
+			monthly := "—"
+			if o.MonthlyUSD > 0 {
+				monthly = "~" + usd(o.MonthlyUSD) + "/mo"
+			}
+			fmt.Fprintf(&b, "| `%s` | %d | %d | %s | %s |\n",
+				o.Workflow, o.Runs, o.WastedMinutes, usd(o.WastedUSD), monthly)
+		}
+		b.WriteString("\nPull request runs only, counted from the moment the newer run started ")
+		b.WriteString("rather than the whole run. Adding this to the workflow stops it:\n\n")
+		b.WriteString("```yaml\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true\n```\n\n")
+		b.WriteString("`cancel-in-progress` is the load-bearing line — without it the group queues ")
+		b.WriteString("the newer run behind the older one instead of replacing it.\n\n")
+	}
+
 	b.WriteString("<details>\n<summary>What these numbers do and do not include</summary>\n\n")
 	fmt.Fprintf(&b, "- Priced against [GitHub's published runner rates](%s), retrieved %s.\n",
 		pricing.RatesSource, pricing.RatesRetrieved)
+	b.WriteString("- **Runs** is everything that ran; **Scored** is the subset that concluded success or failure. ")
+	b.WriteString("Cancelled runs cost money but say nothing about flakiness, so they count in one column and not the other.\n")
 	b.WriteString("- Billing rounds **each job** up to the whole minute, not the run. ")
 	b.WriteString("A run of ten 30-second jobs bills ten minutes, not five.\n")
 	b.WriteString("- Public repositories are not billed for standard GitHub-hosted runners. ")
 	b.WriteString("For those, this is what the same runs would cost on a private repository.\n")
+	if c.UserPricedJobs > 0 {
+		fmt.Fprintf(&b, "- %d job(s) were priced from a user-supplied rate file rather than GitHub's published table: `%s`\n",
+			c.UserPricedJobs, strings.Join(c.UserSuppliedLabels, "`, `"))
+	}
 	if c.SelfHostedJobs > 0 {
 		fmt.Fprintf(&b, "- %d job(s) ran on self-hosted runners and are excluded — GitHub does not currently bill them.\n", c.SelfHostedJobs)
 	}

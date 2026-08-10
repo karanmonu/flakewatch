@@ -3,11 +3,14 @@
 package gh
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +22,11 @@ type WorkflowRun struct {
 	HeadBranch string `json:"head_branch"`
 	Status     string `json:"status"`     // queued | in_progress | completed
 	Conclusion string `json:"conclusion"` // success | failure | cancelled | ...
+	// Event is what triggered the run: push, pull_request, schedule, and so on.
+	// It matters because the same observation means different things per event
+	// -- two overlapping runs on a pull request branch are waste, two on the
+	// default branch are one build per commit, which is the point.
+	Event string `json:"event"`
 	// Path is the workflow file this run came from, e.g.
 	// ".github/workflows/ci.yml". Names collide and get renamed; the path is
 	// what a pull request diff actually gives you.
@@ -41,6 +49,10 @@ type APIError struct {
 	StatusCode int
 	Status     string
 	URL        string
+	// Message is whatever GitHub put in the response body. Without it a 403 is
+	// just "403", and the reader has to guess between a missing scope, SAML
+	// enforcement, and a repository that does not exist.
+	Message string
 	// RateLimited is true for a 429, or a 403 that came with an exhausted
 	// rate-limit budget. GitHub uses 403 for both permissions and rate limits,
 	// so the header is the only way to tell them apart.
@@ -48,10 +60,16 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	var b strings.Builder
 	if e.RateLimited {
-		return fmt.Sprintf("GitHub API rate limit exhausted (%s) for %s", e.Status, e.URL)
+		fmt.Fprintf(&b, "GitHub API rate limit exhausted (%s) for %s", e.Status, e.URL)
+	} else {
+		fmt.Fprintf(&b, "GitHub API returned %s for %s", e.Status, e.URL)
 	}
-	return fmt.Sprintf("GitHub API returned %s for %s", e.Status, e.URL)
+	if e.Message != "" {
+		fmt.Fprintf(&b, ": %s", e.Message)
+	}
+	return b.String()
 }
 
 // NotFound reports whether err is a 404 from the GitHub API.
@@ -122,11 +140,11 @@ func (c *Client) recordRate(h http.Header) {
 }
 
 // get performs a GET against path and decodes the JSON body into out.
-func (c *Client) get(path string, out any) error {
+func (c *Client) get(ctx context.Context, path string, out any) error {
 	url := c.baseURL + path
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("building request for %s: %w", url, err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -136,7 +154,7 @@ func (c *Client) get(path string, out any) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("requesting %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
@@ -154,23 +172,50 @@ func (c *Client) get(path string, out any) error {
 			Status:      resp.Status,
 			URL:         url,
 			RateLimited: limited,
+			Message:     errorMessage(resp.Body),
 		}
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decoding response from %s: %w", url, err)
+	}
+	return nil
 }
 
-// ListWorkflowRuns fetches up to max recent workflow runs for repo ("owner/name"),
-// newest first, paginating as needed (100 per page).
-func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
+// maxErrorBody caps how much of an error response we read. GitHub's are small;
+// anything large is a proxy or a captive portal, and quoting all of it into
+// somebody's terminal helps nobody.
+const maxErrorBody = 4 << 10
+
+// errorMessage pulls GitHub's own explanation out of an error response.
+//
+// It never returns an error of its own. This runs on a path that already has
+// one, and failing to read the body is not more interesting than the status.
+func errorMessage(r io.Reader) string {
+	body, err := io.ReadAll(io.LimitReader(r, maxErrorBody))
+	if err != nil || len(body) == 0 {
+		return ""
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Message != "" {
+		return payload.Message
+	}
+	return strings.TrimSpace(string(body))
+}
+
+// ListWorkflowRuns fetches up to limit recent workflow runs for repo
+// ("owner/name"), newest first, paginating as needed (100 per page).
+func (c *Client) ListWorkflowRuns(ctx context.Context, repo string, limit int) ([]WorkflowRun, error) {
 	var all []WorkflowRun
 	perPage := 100
-	if max < perPage {
-		perPage = max
+	if limit < perPage {
+		perPage = limit
 	}
-	for page := 1; len(all) < max; page++ {
+	for page := 1; len(all) < limit; page++ {
 		var pageData runsPage
 		path := fmt.Sprintf("/repos/%s/actions/runs?per_page=%d&page=%d", repo, perPage, page)
-		if err := c.get(path, &pageData); err != nil {
+		if err := c.get(ctx, path, &pageData); err != nil {
 			return nil, err
 		}
 		if len(pageData.WorkflowRuns) == 0 {
@@ -181,22 +226,22 @@ func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
 			break
 		}
 	}
-	if len(all) > max {
-		all = all[:max]
+	if len(all) > limit {
+		all = all[:limit]
 	}
 	return all, nil
 }
 
 // ListWorkflowRunsSince fetches runs started on or after since, newest first,
-// up to max runs.
+// up to limit runs.
 //
-// It reports complete=false when max was reached before the window was covered,
+// It reports complete=false when limit was reached before the window was covered,
 // which matters: the caller asked about 30 days and is holding 4 days of data,
 // and a monthly projection built from that should say so.
 //
 // The created filter GitHub accepts is date-granular, so the last page is
 // trimmed here to the exact instant.
-func (c *Client) ListWorkflowRunsSince(repo string, since time.Time, max int) ([]WorkflowRun, bool, error) {
+func (c *Client) ListWorkflowRunsSince(ctx context.Context, repo string, since time.Time, limit int) ([]WorkflowRun, bool, error) {
 	created := url.QueryEscape(">=" + since.UTC().Format("2006-01-02"))
 
 	var all []WorkflowRun
@@ -205,19 +250,19 @@ func (c *Client) ListWorkflowRunsSince(repo string, since time.Time, max int) ([
 	// per_page stays fixed for every page. GitHub paginates by offset, so page N
 	// returns items [(N-1)*per_page, N*per_page). Shrinking per_page on later
 	// pages to "only ask for what is left" therefore re-requests rows already
-	// seen and skips the ones after them: with max=150 the second page would
+	// seen and skips the ones after them: with limit=150 the second page would
 	// come back as items 51-100 again, double-counting fifty runs' cost and
 	// losing runs 101-150 entirely. Over-fetch and trim at the end instead.
 	perPage := 100
-	if max < perPage {
-		perPage = max
+	if limit < perPage {
+		perPage = limit
 	}
 
-	for page := 1; len(all) < max; page++ {
+	for page := 1; len(all) < limit; page++ {
 
 		var pageData runsPage
 		path := fmt.Sprintf("/repos/%s/actions/runs?per_page=%d&page=%d&created=%s", repo, perPage, page, created)
-		if err := c.get(path, &pageData); err != nil {
+		if err := c.get(ctx, path, &pageData); err != nil {
 			return nil, false, err
 		}
 		if len(pageData.WorkflowRuns) == 0 {
@@ -239,8 +284,8 @@ func (c *Client) ListWorkflowRunsSince(repo string, since time.Time, max int) ([
 		}
 	}
 
-	if len(all) > max {
-		all = all[:max]
+	if len(all) > limit {
+		all = all[:limit]
 	}
 	return all, reachedWindow, nil
 }

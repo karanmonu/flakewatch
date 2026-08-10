@@ -1,11 +1,14 @@
 package gh
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +35,7 @@ func TestGetSendsExpectedHeaders(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{})
 	}))
 
-	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +59,7 @@ func TestGetOmitsAuthorizationWhenTokenEmpty(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{})
 	}))
 
-	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
 	}
 	if hadAuth {
@@ -83,7 +86,7 @@ func TestListWorkflowRunsPaginates(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: total, WorkflowRuns: runs})
 	}))
 
-	got, err := c.ListWorkflowRuns("o/r", total)
+	got, err := c.ListWorkflowRuns(context.Background(), "o/r", total)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +106,7 @@ func TestListWorkflowRunsRespectsMax(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: runs})
 	}))
 
-	got, err := c.ListWorkflowRuns("o/r", 10)
+	got, err := c.ListWorkflowRuns(context.Background(), "o/r", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +131,7 @@ func TestListWorkflowRunsStopsOnEmptyPage(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: make([]WorkflowRun, 100)})
 	}))
 
-	got, err := c.ListWorkflowRuns("o/r", 1000)
+	got, err := c.ListWorkflowRuns(context.Background(), "o/r", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +148,7 @@ func TestAPIErrorCarriesStatusAndNotFoundIdentifiesIt(t *testing.T) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 
-	_, err := c.RunJobs("o/r", 1)
+	_, err := c.RunJobs(context.Background(), "o/r", 1)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -184,7 +187,7 @@ func TestRunJobsPaginates(t *testing.T) {
 		json.NewEncoder(w).Encode(jobsPage{TotalCount: 120, Jobs: make([]Job, n)})
 	}))
 
-	jobs, err := c.RunJobs("o/r", 1)
+	jobs, err := c.RunJobs(context.Background(), "o/r", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +207,7 @@ func TestRunAllJobsCountsMissingRatherThanFailing(t *testing.T) {
 		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 7}}})
 	}))
 
-	res, err := c.RunAllJobs("o/r", []int64{1, 2, 3}, 2)
+	res, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2, 3}, 2)
 	if err != nil {
 		t.Fatalf("a 404 on one run must not fail the batch: %v", err)
 	}
@@ -224,7 +227,7 @@ func TestRunAllJobsAbortsOnNonNotFoundError(t *testing.T) {
 		http.Error(w, "bad credentials", http.StatusUnauthorized)
 	}))
 
-	res, err := c.RunAllJobs("o/r", []int64{1, 2, 3}, 2)
+	res, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2, 3}, 2)
 	if err == nil {
 		t.Fatal("a 401 must be returned, not swallowed")
 	}
@@ -254,7 +257,7 @@ func TestRunAllJobsRespectsConcurrencyLimit(t *testing.T) {
 	for i := range ids {
 		ids[i] = int64(i)
 	}
-	if _, err := c.RunAllJobs("o/r", ids, limit); err != nil {
+	if _, err := c.RunAllJobs(context.Background(), "o/r", ids, limit); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,7 +274,7 @@ func TestRunAllJobsDefaultsConcurrencyWhenNonPositive(t *testing.T) {
 		json.NewEncoder(w).Encode(jobsPage{TotalCount: 0})
 	}))
 
-	if _, err := c.RunAllJobs("o/r", []int64{1, 2}, 0); err != nil {
+	if _, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2}, 0); err != nil {
 		t.Fatalf("zero concurrency should fall back to the default, not deadlock: %v", err)
 	}
 }
@@ -328,7 +331,7 @@ func TestForbiddenIsRateLimitedOnlyWhenBudgetIsExhausted(t *testing.T) {
 				w.WriteHeader(tt.status)
 			}))
 
-			_, err := c.RunJobs("o/r", 1)
+			_, err := c.RunJobs(context.Background(), "o/r", 1)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -358,7 +361,7 @@ func TestClientRecordsRateLimitHeaders(t *testing.T) {
 	if rl := c.RateLimit(); rl.Known {
 		t.Error("a fresh client must not claim to know the budget")
 	}
-	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -393,7 +396,7 @@ func TestRunAllJobsTrimsWorkToFitRemainingBudget(t *testing.T) {
 	}))
 
 	// One call so the client has seen the headers.
-	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -401,7 +404,7 @@ func TestRunAllJobsTrimsWorkToFitRemainingBudget(t *testing.T) {
 	for i := range ids {
 		ids[i] = int64(i + 1)
 	}
-	res, err := c.RunAllJobs("o/r", ids, 4)
+	res, err := c.RunAllJobs(context.Background(), "o/r", ids, 4)
 	if err != nil {
 		t.Fatalf("running short of budget is not an error: %v", err)
 	}
@@ -426,11 +429,11 @@ func TestRunAllJobsFetchesNothingBelowTheReserve(t *testing.T) {
 		w.Header().Set("X-RateLimit-Remaining", "5")
 		json.NewEncoder(w).Encode(runsPage{})
 	}))
-	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := c.RunAllJobs("o/r", []int64{1, 2, 3}, 2)
+	res, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2, 3}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +463,7 @@ func TestRunAllJobsReturnsPartialResultWhenRateLimitedMidway(t *testing.T) {
 	for i := range ids {
 		ids[i] = int64(i + 1)
 	}
-	res, err := c.RunAllJobs("o/r", ids, 1)
+	res, err := c.RunAllJobs(context.Background(), "o/r", ids, 1)
 	if err != nil {
 		t.Fatalf("rate limiting must not fail the batch: %v", err)
 	}
@@ -492,7 +495,7 @@ func TestListWorkflowRunsSinceTrimsTheDateGranularEdge(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 2, WorkflowRuns: []WorkflowRun{inside, edge}})
 	}))
 
-	runs, complete, err := c.ListWorkflowRunsSince("o/r", since, 100)
+	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", since, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +525,7 @@ func TestListWorkflowRunsSinceReportsAnIncompleteWindow(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
 	}))
 
-	runs, complete, err := c.ListWorkflowRunsSince("o/r", now.Add(-30*24*time.Hour), 150)
+	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", now.Add(-30*24*time.Hour), 150)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +544,7 @@ func TestListWorkflowRunsSinceStopsOnAnEmptyPage(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000})
 	}))
 
-	runs, complete, err := c.ListWorkflowRunsSince("o/r", time.Now().Add(-24*time.Hour), 500)
+	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", time.Now().Add(-24*time.Hour), 500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +586,7 @@ func TestListWorkflowRunsSinceDoesNotRefetchRowsAcrossPages(t *testing.T) {
 		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
 	}))
 
-	runs, _, err := c.ListWorkflowRunsSince("o/r", now.Add(-30*24*time.Hour), 150)
+	runs, _, err := c.ListWorkflowRunsSince(context.Background(), "o/r", now.Add(-30*24*time.Hour), 150)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,5 +606,60 @@ func TestListWorkflowRunsSinceDoesNotRefetchRowsAcrossPages(t *testing.T) {
 		if p != "100" {
 			t.Errorf("request %d used per_page=%s; it must not change between pages", i+1, p)
 		}
+	}
+}
+
+// A long analysis is hundreds of requests. Ctrl-C should stop it now rather
+// than after every in-flight request drains, which means the context has to
+// reach the requests themselves and not just wrap the call.
+func TestRunAllJobsStopsWhenTheContextIsCancelled(t *testing.T) {
+	var served int32
+	ctx, cancel := context.WithCancel(context.Background())
+
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&served, 1) == 2 {
+			cancel()
+		}
+		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+	}))
+
+	ids := make([]int64, 200)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	// Serially, so cancellation lands well before the list is exhausted.
+	res, err := c.RunAllJobs(ctx, "o/r", ids, 1)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation should not surface as an unrelated error: %v", err)
+	}
+	if n := atomic.LoadInt32(&served); n > 50 {
+		t.Errorf("made %d requests after cancellation; it should stop handing out work", n)
+	}
+	_ = res
+}
+
+// GitHub explains itself in the response body. A bare "403" leaves the reader
+// guessing between a missing scope, SAML enforcement and a repo that is not
+// there, so the message travels with the error.
+func TestAPIErrorCarriesGitHubsMessage(t *testing.T) {
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com"}`))
+	}))
+
+	_, err := c.RunJobs(context.Background(), "o/r", 1)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("error is %T, want *APIError", err)
+	}
+	if apiErr.Message != "Resource not accessible by integration" {
+		t.Errorf("Message = %q, want GitHub's own text", apiErr.Message)
+	}
+	if !strings.Contains(err.Error(), "Resource not accessible by integration") {
+		t.Errorf("Error() = %q; the message is the useful part, it has to be in there", err)
 	}
 }

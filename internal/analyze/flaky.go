@@ -24,8 +24,17 @@ type Options struct {
 
 // WorkflowStats summarizes one workflow's recent history.
 type WorkflowStats struct {
-	Name           string  `json:"name"`
-	Runs           int     `json:"runs"`
+	Name string `json:"name"`
+	// Runs is every completed run of this workflow in the window, whatever it
+	// concluded. Cancelled runs are included because they cost money.
+	Runs int `json:"runs"`
+	// Scored is the subset that concluded success or failure, which is the only
+	// subset a flakiness score can be computed over: a cancelled run says
+	// nothing about whether a workflow is flaky.
+	//
+	// Reporting both is the point. One number covering two different questions
+	// is what made the cost and flakiness columns fail to reconcile (#10).
+	Scored         int     `json:"scored"`
 	Failures       int     `json:"failures"`
 	FailureRate    float64 `json:"failure_rate"`
 	Transitions    int     `json:"transitions"` // pass<->fail flips in chronological order
@@ -35,10 +44,33 @@ type WorkflowStats struct {
 	// ScoreConfident reports whether there were enough runs for the flakiness
 	// score to mean anything. See MinRunsForScore.
 	ScoreConfident bool `json:"score_confident"`
-	// Path is the workflow file, e.g. ".github/workflows/ci.yml".
+	// Path is the workflow file, e.g. ".github/workflows/ci.yml". Empty when
+	// every run of this workflow in the window was cancelled.
 	Path string `json:"path,omitempty"`
 	// Touched reports whether this workflow is one of Options.ChangedPaths.
 	Touched bool `json:"touched,omitempty"`
+
+	// key is what runs were grouped by. Unexported: it is Path when there is
+	// one and Name otherwise, which is an implementation detail rather than
+	// something a consumer of the JSON should have to reason about.
+	key string
+}
+
+// workflowKey is the identity a workflow is grouped by.
+//
+// The file, not the display name. A workflow's `name:` can change without the
+// file changing, which splits one workflow into two rows each holding half its
+// history; and two different files can share a name -- `name: CI` is not rare
+// -- which merges two workflows into one row whose cost is the sum of both and
+// whose path is whichever run happened to sort first.
+//
+// Runs old enough to predate GitHub returning a path fall back to the name,
+// which is the pre-existing behaviour and no worse than it was.
+func workflowKey(r gh.WorkflowRun) string {
+	if r.Path != "" {
+		return r.Path
+	}
+	return r.Name
 }
 
 // MinRunsForScore is the fewest completed runs before a flakiness score is
@@ -83,6 +115,9 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 	}
 
 	byWorkflow := make(map[string][]gh.WorkflowRun)
+	totalRuns := make(map[string]int)
+	displayName := make(map[string]string)
+	newestRun := make(map[string]time.Time)
 	var zombies []Zombie
 
 	for _, r := range runs {
@@ -93,17 +128,36 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 			}
 			continue // not part of pass/fail history yet
 		}
+		// Every completed run counts towards Runs, whatever it concluded.
+		k := workflowKey(r)
+		totalRuns[k]++
+		// The newest run wins the display name, so a renamed workflow shows
+		// what it is called now rather than what it used to be called.
+		if _, seen := displayName[k]; !seen || r.RunStartedAt.After(newestRun[k]) {
+			displayName[k] = r.Name
+			newestRun[k] = r.RunStartedAt
+		}
 		if r.Conclusion == "success" || r.Conclusion == "failure" {
-			byWorkflow[r.Name] = append(byWorkflow[r.Name], r)
+			byWorkflow[k] = append(byWorkflow[k], r)
+		}
+	}
+
+	// A workflow can appear only as cancelled runs: no score, but real spend.
+	for k := range totalRuns {
+		if _, ok := byWorkflow[k]; !ok {
+			byWorkflow[k] = nil
 		}
 	}
 
 	var stats []WorkflowStats
-	for name, wr := range byWorkflow {
+	for k, wr := range byWorkflow {
 		// Chronological order (API returns newest first).
 		sort.Slice(wr, func(i, j int) bool { return wr[i].RunStartedAt.Before(wr[j].RunStartedAt) })
 
-		s := WorkflowStats{Name: name, Runs: len(wr), Path: wr[0].Path}
+		s := WorkflowStats{Name: displayName[k], Runs: totalRuns[k], Scored: len(wr), key: k}
+		if len(wr) > 0 {
+			s.Path = wr[len(wr)-1].Path
+		}
 		if _, ok := changed[s.Path]; ok && s.Path != "" {
 			s.Touched = true
 		}
@@ -117,10 +171,12 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 			}
 			totalDur += r.UpdatedAt.Sub(r.RunStartedAt).Seconds()
 		}
-		s.FailureRate = float64(s.Failures) / float64(s.Runs)
-		s.AvgDurationSec = totalDur / float64(s.Runs)
-		s.FlakinessScore = flakinessScore(s.Runs, s.Transitions, s.FailureRate)
-		s.ScoreConfident = s.Runs >= MinRunsForScore
+		if s.Scored > 0 {
+			s.FailureRate = float64(s.Failures) / float64(s.Scored)
+			s.AvgDurationSec = totalDur / float64(s.Scored)
+		}
+		s.FlakinessScore = flakinessScore(s.Scored, s.Transitions, s.FailureRate)
+		s.ScoreConfident = s.Scored >= MinRunsForScore
 		stats = append(stats, s)
 	}
 
@@ -138,11 +194,13 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 // flakinessScore returns 0..1. Instability (transition rate) is damped by how
 // far the failure rate is from the extremes: always-pass and always-fail are
 // not flaky by definition.
-func flakinessScore(runs, transitions int, failureRate float64) float64 {
-	if runs < 2 {
+//
+// scored, not total runs: a cancelled run is not evidence either way.
+func flakinessScore(scored, transitions int, failureRate float64) float64 {
+	if scored < 2 {
 		return 0
 	}
-	transitionRate := float64(transitions) / float64(runs-1)
+	transitionRate := float64(transitions) / float64(scored-1)
 	// 4*p*(1-p) peaks at 1.0 when failureRate=0.5 and is 0 at both extremes.
 	extremeDamp := 4 * failureRate * (1 - failureRate)
 	return transitionRate * extremeDamp

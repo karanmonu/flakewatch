@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCeilMinutes(t *testing.T) {
 	tests := []struct {
@@ -117,5 +120,34 @@ func TestResolveUnpublishedCoreCountIsUnknown(t *testing.T) {
 func TestMacOSIsAnOrderOfMagnitudeDearerThanUbuntu(t *testing.T) {
 	if ratio := MacOSUSDPerMinute / UbuntuUSDPerMinute; ratio < 9 || ratio > 12 {
 		t.Errorf("macOS/ubuntu ratio is %.1fx, expected ~10x -- check rates against %s", ratio, RatesSource)
+	}
+}
+
+// A hardcoded price list goes stale silently. The retrieval date is honest but
+// passive -- nobody reads a date and does the subtraction -- so the package
+// does it, and the report can say so out loud.
+func TestRatesStaleness(t *testing.T) {
+	retrieved, err := time.Parse("2006-01-02", RatesRetrieved)
+	if err != nil {
+		t.Fatalf("RatesRetrieved %q is not a date: %v", RatesRetrieved, err)
+	}
+
+	if RatesStale(retrieved) {
+		t.Error("the table is not stale on the day it was retrieved")
+	}
+	if RatesStale(retrieved.Add(StaleAfter - time.Hour)) {
+		t.Error("still inside the window, should not be stale")
+	}
+	if !RatesStale(retrieved.Add(StaleAfter + time.Hour)) {
+		t.Error("past the window, should be stale")
+	}
+
+	if age := RatesAge(retrieved.Add(48 * time.Hour)); age != 48*time.Hour {
+		t.Errorf("RatesAge = %v, want 48h", age)
+	}
+	// A clock behind the retrieval date is a machine with a wrong clock, not a
+	// negative age.
+	if age := RatesAge(retrieved.Add(-24 * time.Hour)); age != 0 {
+		t.Errorf("RatesAge = %v for a clock before the retrieval date, want 0", age)
 	}
 }

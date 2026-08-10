@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.5.0
+
+**You can supply your own runner rates** ([#15](https://github.com/karanmonu/flakewatch/issues/15)).
+`-rates rates.json` takes a JSON object of runner label to USD per minute and
+uses it ahead of both the published table and the self-hosted rule. This closes
+the gap that mattered most: jobs on self-hosted runners and on labels with no
+published rate were excluded from the total, so flakewatch undercounted hardest
+for exactly the people with the largest bill. When labels are still unpriced the
+report now prints the rate file you would need, with your own labels already
+filled in, instead of only naming the gap.
+
+**Runs that kept going after a newer commit replaced them** ([#8](https://github.com/karanmonu/flakewatch/issues/8)).
+Pull request runs that were still executing when the next push started its own
+run, and finished anyway. Priced from the moment a concurrency group would have
+cancelled them rather than for the whole run, because the minutes before the
+newer push were buying a result somebody still wanted. The report prints the
+four lines of YAML that stop it. Pull request events only — two overlapping runs
+on the default branch are one build per commit, which is the point of them.
+
+**Where the time goes, by step** ([#9](https://github.com/karanmonu/flakewatch/issues/9)).
+"Your Test workflow is 93% of the bill" was half an answer; the next question is
+always which part of Test. The jobs endpoint already returns every step with its
+timestamps in the response the cost arithmetic was reading anyway, so the
+drill-down costs no extra requests. Matrix legs count separately, because a
+four-second step fanned out twelve ways is not a four-second step.
+
+Step figures are a *share* of a job's cost, not a charge: GitHub bills the job,
+rounded up to the minute, so the steps sum to slightly less than the job. The
+report says so next to the table rather than in a footnote.
+
+**A workflow is now identified by its file, not its display name.** Everything
+grouped runs by `name:`, which gets two common cases wrong: two files sharing a
+name (`name: CI` is not rare) merged into one row whose cost was the sum of both,
+and a workflow renamed mid-window split into two rows each holding half its
+history and a flakiness score computed over half the evidence. The code already
+argued that "names collide and get renamed" when matching `-changed` against
+paths; it just did not apply that anywhere else. Falls back to the name for runs
+old enough to predate GitHub returning a path.
+
+**Cost and flakiness no longer count different things under one label.**
+`WorkflowStats` carries `Runs` (every completed run, including cancelled ones,
+because they cost money) and `Scored` (the subset that concluded success or
+failure, the only subset a flakiness score can be computed over). The terminal
+and the pull request comment show both, and the paragraph explaining why two
+numbers disagreed is gone, because they no longer do ([#10](https://github.com/karanmonu/flakewatch/issues/10)).
+
+**`context.Context` throughout.** Every request-making method takes one, requests
+are built with `http.NewRequestWithContext`, and the CLI derives its context from
+`signal.NotifyContext` — so Ctrl-C cancels in-flight requests instead of waiting
+for 800 of them to drain, and the process exits 130 so a wrapping script can tell
+an interrupt from a failure.
+
+**The rate table detects its own staleness.** A retrieval date is honest but
+passive; nobody reads a date and does the subtraction. Past six months the report
+says how old the prices are and that the totals are indicative.
+
+- `-changed` marks rows in terminal output too. It was a silent no-op outside
+  `-markdown`.
+- API errors carry GitHub's own message. A bare "403" left the reader guessing
+  between a missing scope, SAML enforcement, and a repository that does not
+  exist. Transport and decode failures are wrapped with `%w` and the URL.
+- `max` no longer shadows the Go builtin of the same name; the parameter is
+  `limit`.
+
 ## v0.4.0
 
 **A monthly figure now requires at least a week of measured history.** CI load
