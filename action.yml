@@ -15,13 +15,18 @@ inputs:
     required: false
     default: ${{ github.token }}
   runs:
-    description: How many recent workflow runs to analyze.
+    description: >-
+      How many recent workflow runs to analyze. Each run costs one API request,
+      and inside Actions the GITHUB_TOKEN budget is roughly 1,000 requests an
+      hour shared with every other workflow in the repository. The default is
+      deliberately small so that several pull requests in an hour cannot drain
+      it. Raise it on quiet repositories.
     required: false
-    default: "200"
+    default: "50"
   version:
     description: flakewatch release to use.
     required: false
-    default: v0.2.0
+    default: v0.3.0
   always-comment:
     description: >-
       Comment on every pull request rather than only those touching
@@ -33,6 +38,10 @@ inputs:
 runs:
   using: composite
   steps:
+    # Every step below ends in exit 0. This action reports; it does not judge.
+    # A red check on someone's pull request because a reporting tool could not
+    # reach a release asset is a bad trade, so failures become annotations and
+    # the remaining steps skip themselves.
     - name: Check whether this PR touches workflows
       id: changed
       shell: bash
@@ -42,6 +51,10 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         set -uo pipefail
+        if [ -z "${BASE_SHA:-}" ]; then
+          echo "::warning::flakewatch found no pull request context; skipping."
+          echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
+        fi
         if [ "$ALWAYS" = "true" ]; then
           echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
@@ -58,49 +71,73 @@ runs:
         fi
 
     - name: Install flakewatch
+      id: install
       if: steps.changed.outputs.relevant == 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
         url="https://github.com/karanmonu/flakewatch/releases/download/${VERSION}/flakewatch_linux_amd64.tar.gz"
-        curl -fsSL "$url" | tar xz -C /tmp flakewatch
+        if ! curl -fsSL --retry 2 --retry-delay 2 "$url" | tar xz -C /tmp flakewatch; then
+          echo "::warning::flakewatch ${VERSION} could not be downloaded; skipping the report."
+          echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+        fi
         chmod +x /tmp/flakewatch
         /tmp/flakewatch -version
+        echo "ok=true" >> "$GITHUB_OUTPUT"
 
     - name: Analyze
-      if: steps.changed.outputs.relevant == 'true'
+      id: analyze
+      if: steps.install.outputs.ok == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         RUNS: ${{ inputs.runs }}
         REPO: ${{ github.repository }}
       run: |
-        set -euo pipefail
-        /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -markdown > /tmp/flakewatch-comment.md
+        set -uo pipefail
+        if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
+          echo "::warning::flakewatch could not analyze $REPO: $(head -c 400 /tmp/flakewatch-err.txt)"
+          echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        if [ ! -s /tmp/flakewatch-comment.md ]; then
+          echo "::warning::flakewatch produced an empty report; nothing to comment."
+          echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+        fi
         cat /tmp/flakewatch-comment.md >> "$GITHUB_STEP_SUMMARY"
+        echo "ok=true" >> "$GITHUB_OUTPUT"
 
     - name: Comment on the pull request
-      if: steps.changed.outputs.relevant == 'true'
+      if: steps.analyze.outputs.ok == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
         # Build the JSON body with jq rather than relying on shell quoting -
         # the comment contains backticks, quotes and newlines.
-        jq -Rs '{body: .}' /tmp/flakewatch-comment.md > /tmp/flakewatch-payload.json
+        if ! jq -Rs '{body: .}' /tmp/flakewatch-comment.md > /tmp/flakewatch-payload.json; then
+          echo "::warning::Could not build the comment payload; the report is in the job summary."
+          exit 0
+        fi
 
         existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq 'map(select(.body | startswith("<!-- flakewatch:report -->"))) | .[0].id // empty')
+          --jq 'map(select(.body | startswith("<!-- flakewatch:report -->"))) | .[0].id // empty') || existing=""
 
         if [ -n "$existing" ]; then
-          gh api -X PATCH "repos/$REPO/issues/comments/$existing" --input /tmp/flakewatch-payload.json >/dev/null
-          echo "Updated existing comment $existing"
-        else
-          gh api -X POST "repos/$REPO/issues/$PR/comments" --input /tmp/flakewatch-payload.json >/dev/null
+          if gh api -X PATCH "repos/$REPO/issues/comments/$existing" --input /tmp/flakewatch-payload.json >/dev/null; then
+            echo "Updated existing comment $existing"
+          else
+            echo "::warning::Could not update comment $existing. The report is in the job summary."
+          fi
+        elif gh api -X POST "repos/$REPO/issues/$PR/comments" --input /tmp/flakewatch-payload.json >/dev/null; then
           echo "Posted a new comment"
+        else
+          # Pull requests from forks get a read-only token. That is by design,
+          # not a misconfiguration, so it should not read as a failure.
+          echo "::warning::Could not post the comment. Forked pull requests get a read-only token; the report is in the job summary."
         fi
+        exit 0
