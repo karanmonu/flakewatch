@@ -183,3 +183,25 @@ func line(n int) string {
 	}
 	return string(b)
 }
+// writeRunReconciliation explains why two counts on the same page differ.
+//
+// Cost includes every run that had jobs. The flakiness table counts only runs
+// that concluded success or failure, because a cancelled run says nothing about
+// whether a workflow is flaky. Both are right; printing them next to each other
+// without a word of explanation is not, and an unexplained discrepancy is how a
+// reader decides to distrust every other number here.
+func writeRunReconciliation(w io.Writer, r analyze.Result) {
+	if r.Cost.RunsPriced == 0 {
+		return
+	}
+	var scored int
+	for _, s := range r.Workflows {
+		scored += s.Runs
+	}
+	if scored == r.Cost.RunsPriced {
+		return
+	}
+	fmt.Fprintf(w, "%d runs priced. %d of them concluded success or failure and are scored\n"+
+		"below; the other %d were cancelled or skipped, which costs money but says\n"+
+		"nothing about flakiness.\n\n", r.Cost.RunsPriced, scored, r.Cost.RunsPriced-scored)
+}
