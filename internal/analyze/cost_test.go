@@ -88,7 +88,7 @@ func TestSummarizeCostAttributesPerWorkflowAndExtrapolates(t *testing.T) {
 
 	runs := []gh.WorkflowRun{
 		{ID: 1, Name: "ci", RunStartedAt: epoch},
-		{ID: 2, Name: "ci", RunStartedAt: epoch.Add(5 * 24 * time.Hour)},
+{ID: 2, Name: "ci", RunStartedAt: epoch.Add(10 * 24 * time.Hour)},
 		{ID: 3, Name: "release", RunStartedAt: epoch.Add(2 * 24 * time.Hour)},
 	}
 	jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{1: oneMinute, 2: oneMinute, 3: oneMinute}}
