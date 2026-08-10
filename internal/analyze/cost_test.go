@@ -148,3 +148,19 @@ func TestSummarizeCostCountsSkippedJobs(t *testing.T) {
 	}
 }
 
+// A truncated sample has to reach the report. Silently analyzing 40 runs when
+// the caller asked for 200 is the kind of thing that makes a number wrong in a
+// way nobody can see.
+func TestSummarizeCostCarriesTheBudgetShortfall(t *testing.T) {
+	runs := []gh.WorkflowRun{{ID: 1, Name: "ci", RunStartedAt: epoch}}
+	jobs := gh.JobsResult{
+		ByRun:            map[int64][]gh.Job{1: {mkjob([]string{"ubuntu-latest"}, epoch, time.Minute)}},
+		SkippedForBudget: 160,
+	}
+
+	summary := SummarizeCost(runs, jobs, []WorkflowStats{{Name: "ci"}})
+
+	if summary.RunsSkippedForBudget != 160 {
+		t.Errorf("RunsSkippedForBudget = %d, want 160", summary.RunsSkippedForBudget)
+	}
+}
