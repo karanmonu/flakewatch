@@ -18,46 +18,63 @@ go install github.com/karanmonu/flakewatch@latest
 
 ```bash
 export GITHUB_TOKEN=...   # any token with actions:read
-flakewatch -repo grafana/k6 -runs 200 -cost
+flakewatch -repo gohugoio/hugo -runs 200 -since 30d -cost
 ```
 
-Real output:
-
 ```
-flakewatch report — grafana/k6
+flakewatch report — gohugoio/hugo
 ------------------------------------------------------------------------
 
-Estimated spend: $24.12 over 3.2 days  (~$224/month at this rate)
+Estimated spend: $18.38 over 3.3 days  (window too short to project a month)
 This is what the runs would cost at published rates. Public repositories
 are not billed for standard GitHub-hosted runners.
-20 job(s) used a runner label with no published rate and are excluded,
-so this is an undercount. Labels: github-hosted-windows-x64-large
+Asked for 30 days but hit the run cap first, so this covers 3.3 days.
+About -runs 455 would cover the full window, at one request per run.
+
+50 runs priced. 36 of them concluded success or failure and are scored
+below; the other 14 were cancelled or skipped, which costs money but says
+nothing about flakiness.
 
 WORKFLOW                      RUNS  FAIL%   FLAKY  AVG(s)      COST
-Test                            10    50%    0.33     741     $4.38  🟡 unstable
-Lint                            10    40%    0.32     118     $0.25  🟡 unstable
-Browser tests                   10    10%    0.08    1096     $3.15  🟢 stable
-xk6                             10    10%    0.08     215     $4.85  🟢 stable
-E2E                             12     8%    0.06     313     $9.68  🟢 stable
-TC39                             3     0%       -      43     $0.02  only 3 run(s)
+Test                            18    11%    0.09    3822    $17.07  🟢 stable
+Continuous Integration           7     0%    0.00     146     $0.79  🟢 stable
+Update Docs Helpers              2     0%       -     172     $0.31  only 2 run(s)
 
 Spend on platforms dearer than Linux:
 WORKFLOW                     PLATFORM  JOBS      COST    ON LINUX  DIFFERENCE
-E2E                          macos       24     $7.94       $0.77  $7.17 (~$66.67/mo)
-xk6                          macos       20     $3.53       $0.34  $3.19 (~$29.69/mo)
-Test                         windows     20     $2.47       $1.48  $0.99 (~$9.19/mo)
-
-These are not recommendations. Jobs that genuinely need macOS or Windows
-should stay there -- this only shows what that choice costs.
+Test                         windows     18    $10.67       $6.40       $4.27
 ```
 
-Analyze a fixed time window rather than a fixed number of runs:
+`Test` is 93% of that bill, and $10.67 of it is Windows legs that would cost $6.40 on Linux. Neither fact is available anywhere in the GitHub UI.
+
+## What it says about repositories you know
+
+Measured, not illustrative — [`.github/workflows/survey.yml`](.github/workflows/survey.yml) produced this and you can re-run it. Every row is `-runs 50 -since 30d`, so most windows are short; that is the point of the second column.
+
+| Repository | Window measured | Spend in it | Largest single line | Dearer-platform spend |
+|---|---:|---:|---|---:|
+| `gohugoio/hugo` | 3.3 days | $18.38 | `Test` — 93% of the bill | $10.67 Windows, $6.40 on Linux |
+| `grafana/k6` | 2.4 hours | $10.45 | `E2E` | $3.29 macOS, $0.32 on Linux |
+| `prometheus/prometheus` | 2.4 hours | $9.79 | `CI` | $1.17 Windows, $0.70 on Linux |
+| `rs/zerolog` | 28.2 days | $9.65 | `Test` | $8.56 macOS, $0.83 on Linux |
+| `golangci/golangci-lint` | 1.8 days | $8.82 | `Tests` | $4.22 macOS, $0.41 on Linux |
+| `cli/cli` | 2.4 hours | $5.21 | `Unit and Integration Tests` | $3.60 macOS, $0.35 on Linux |
+| `vitejs/vite` | 9.6 hours | $3.60 | `CI` | — |
+| `hashicorp/terraform` | 2.4 hours | $3.22 | `build` | $0.19 macOS, $0.02 on Linux |
+
+Two things fall out of that table.
+
+**Fifty runs is two and a half hours on a busy repository.** k6, prometheus, cli/cli and terraform all burned through the cap inside a morning. The window column is the honest answer to "over what period?", and the tool tells you what `-runs` value would have covered the window you asked for.
+
+**`rs/zerolog` is the only row with a monthly figure**, because it is the only one where 50 runs spanned more than a week. That restraint is deliberate — see [below](#what-it-will-not-do).
+
+## Fix the window, not the sample size
 
 ```bash
 flakewatch -repo owner/name -since 30d -cost
 ```
 
-This is the difference between a monthly figure that moves every time you run it and one that does not — a run count covers however many days that repo happened to be busy for. `-runs` still caps how many API requests the window can cost, and the report says so when the cap is reached before the window is covered.
+A run count covers however many days that repository happened to be busy for, so the same command run twice gives two different windows and two different monthly figures. A fixed window is comparable between runs. `-runs` still caps what the analysis can spend on API requests, and when the cap is reached first the report says how much of the window it actually covered and what `-runs` would have covered the rest.
 
 Machine-readable, for dashboards or CI gates:
 
@@ -65,91 +82,3 @@ Machine-readable, for dashboards or CI gates:
 flakewatch -repo owner/name -cost -json | jq '.cost'
 ```
 
-## Use it as a GitHub Action
-
-Comment the same numbers on any pull request that touches a workflow file:
-
-```yaml
-name: flakewatch
-on: pull_request
-
-permissions:
-  contents: read
-  actions: read
-  pull-requests: write
-
-jobs:
-  report:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # needed to see which files the PR changed
-      - uses: karanmonu/flakewatch@v0.3.0
-```
-
-It stays quiet by default: no workflow files changed, no comment. When it does comment, it edits its own comment rather than adding a new one on every push.
-
-The comment leads with the workflows **this** pull request edits, and shows the rest of CI underneath — "is this change expensive" is only answerable against what everything else costs. Matching is on the workflow file path rather than its name, because names collide and get renamed while `.github/workflows/ci.yml` is what a diff actually gives you.
-
-| Input | Default | What it does |
-|---|---|---|
-| `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
-| `runs` | `50` | Cap on runs analyzed. One API request each |
-| `since` | `30d` | Time window to analyze. Keeps the monthly figure stable |
-| `version` | `v0.3.0` | Release to download |
-| `always-comment` | `false` | Comment on every PR, not just workflow changes |
-
-Two properties it holds to, because a reporting tool that breaks your pipeline is worse than no reporting tool:
-
-- **It never fails your build.** Every failure path — an unreachable release asset, a bad token, a fork's read-only token — becomes a workflow annotation and a green check.
-- **It leaves your API budget alone.** Inside Actions the `GITHUB_TOKEN` allows roughly 1,000 requests an hour, *shared with every other workflow in the repository*. flakewatch reads its remaining budget from the response headers, keeps 100 requests in reserve, and shrinks the sample rather than spending the lot. A truncated analysis says so in the comment.
-
-## How the cost is measured
-
-Costs come from the **jobs** endpoint, not the run timing endpoint. Two reasons, both found by calling the API rather than reading the docs:
-
-- timing reports zero billable time for public repositories, which GitHub does not bill. `grafana/k6` returns a literally empty `billable` object.
-- timing reports only UBUNTU/MACOS/WINDOWS, so a 32-core runner is indistinguishable from a 2-core one. Job records carry the actual runner label.
-
-Billing rounds **each job** up to the whole minute, not the run. A run of ten 30-second jobs bills ten minutes, not five, and the gap widens the wider a matrix fans out — which is exactly where the money is.
-
-## How the flakiness score works
-
-```
-score = transition_rate × 4p(1-p)
-```
-
-`transition_rate` is pass/fail flips divided by (runs - 1); `p` is the failure rate. The `4p(1-p)` term peaks at `p = 0.5` and is zero at both extremes: a workflow that alternates outcomes is maximally flaky, one that always passes or always fails is not flaky at all.
-
-Workflows with fewer than five runs in the window get no score. Two runs that differ is one coin flip, and reporting that as maximal flakiness was a real bug.
-
-## What it will not do
-
-Jobs on self-hosted runners, and jobs whose runner label has no published rate, are excluded and **named in the output** rather than silently counted as free. A visible gap beats a confident wrong number.
-
-The platform table is an observation, not a recommendation. flakewatch can see that a workflow spends on macOS; it cannot see whether that workflow needs macOS.
-
-The **monthly projection is the weakest number here**. With a plain `-runs` count it scales whatever window those runs happened to cover, and on a busy repository two samples days apart gave $104/mo and $224/mo ([#11](https://github.com/karanmonu/flakewatch/issues/11)). `-since 30d` fixes the window instead of the sample size, which is what makes the number comparable between runs; if the run cap is hit first, the report says how much of the window it actually covered. Per-window and per-platform figures are measured and stable either way.
-
-Scoring is workflow-level, so a flaky job inside a mostly-green workflow gets diluted.
-
-## Design notes
-
-No dependencies — stdlib only, so `go install` is instant and there is nothing to audit. Read-only: needs `actions:read`, never mutates anything. Reasoning in [docs/adr/](docs/adr/).
-
-CI runs flakewatch against this repository on every build, so a change that breaks against the real API fails the build rather than shipping.
-
-## Roadmap
-
-- [x] cost attribution per workflow
-- [x] macOS and Windows spend against the Linux equivalent
-- [ ] job-level flakiness, not just workflow-level
-- [ ] missing concurrency groups and uncached dependency installs
-- [ ] user-supplied rates for unrecognised and self-hosted runner labels
-- [x] GitHub Action mode: comment cost and flakiness on PRs
-- [x] time-window sampling (`-since 30d`) instead of a fixed run count
-
-## License
-
-MIT

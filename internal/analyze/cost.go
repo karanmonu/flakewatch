@@ -63,6 +63,10 @@ type CostSummary struct {
 	WindowTruncated bool `json:"window_truncated,omitempty"`
 	// RequestedWindowDays is the window -since asked for, zero when unused.
 	RequestedWindowDays float64 `json:"requested_window_days,omitempty"`
+	// RunsForFullWindow estimates the -runs value that would have covered the
+	// requested window, from the run density actually observed. Zero unless the
+	// window was truncated.
+	RunsForFullWindow int `json:"runs_for_full_window,omitempty"`
 	// UnknownLabels lists the distinct labels behind UnknownRunnerJobs.
 	//
 	// Naming them rather than only counting them means the tool reports its own
@@ -75,9 +79,19 @@ type CostSummary struct {
 }
 
 // minWindowForExtrapolation is the shortest observed window we will scale to a
-// monthly figure. Below this, one busy afternoon dominates and produces a
-// number that looks authoritative and is not.
-const minWindowForExtrapolation = 24 * time.Hour
+// monthly figure.
+//
+// A week, because CI load is weekly-periodic: weekdays are busy and weekends
+// are nearly dead, so any window shorter than a full cycle systematically
+// misstates the month. Surveying eight public repositories made the size of
+// that error concrete -- golangci-lint measured $8.82 over 1.8 consecutive
+// weekdays, which the old 24-hour floor happily scaled to "$143/month". The
+// $8.82 was measured; the $143 was an artefact of when the sample was taken.
+//
+// The cost of the stricter rule is that busy repositories get no monthly
+// figure until -runs is raised enough to span a week. That is the right
+// trade: a missing number invites a second look, a wrong one does not.
+const minWindowForExtrapolation = 7 * 24 * time.Hour
 
 // SummarizeCost prices a set of runs and attributes spend per workflow.
 //

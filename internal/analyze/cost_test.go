@@ -88,7 +88,7 @@ func TestSummarizeCostAttributesPerWorkflowAndExtrapolates(t *testing.T) {
 
 	runs := []gh.WorkflowRun{
 		{ID: 1, Name: "ci", RunStartedAt: epoch},
-		{ID: 2, Name: "ci", RunStartedAt: epoch.Add(5 * 24 * time.Hour)},
+		{ID: 2, Name: "ci", RunStartedAt: epoch.Add(10 * 24 * time.Hour)},
 		{ID: 3, Name: "release", RunStartedAt: epoch.Add(2 * 24 * time.Hour)},
 	}
 	jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{1: oneMinute, 2: oneMinute, 3: oneMinute}}
@@ -102,8 +102,9 @@ func TestSummarizeCostAttributesPerWorkflowAndExtrapolates(t *testing.T) {
 	if summary.RunsPriced != 3 {
 		t.Errorf("RunsPriced = %d, want 3", summary.RunsPriced)
 	}
-	// A 5-day window scales 6x to reach 30 days.
-	approx(t, summary.MonthlyUSD, 3*0.006*6)
+	// A 10-day window scales 3x to reach 30 days. It has to clear the one-week
+	// floor, below which no monthly figure is offered at all.
+	approx(t, summary.MonthlyUSD, 3*0.006*3)
 }
 
 func TestSummarizeCostDoesNotExtrapolateShortWindows(t *testing.T) {
@@ -162,5 +163,41 @@ func TestSummarizeCostCarriesTheBudgetShortfall(t *testing.T) {
 
 	if summary.RunsSkippedForBudget != 160 {
 		t.Errorf("RunsSkippedForBudget = %d, want 160", summary.RunsSkippedForBudget)
+	}
+}
+
+// CI load is weekly-periodic, so a window shorter than a full cycle cannot be
+// scaled to a month honestly. Surveying public repositories showed the old
+// 24-hour floor turning 1.8 weekdays of golangci-lint into "$143/month".
+func TestSummarizeCostRefusesToProjectFromLessThanAWeek(t *testing.T) {
+	tests := []struct {
+		name        string
+		span        time.Duration
+		wantMonthly bool
+	}{
+		{"under two days", 42 * time.Hour, false},
+		{"just under a week", 6*24*time.Hour - time.Hour, false},
+		{"a full week", 7 * 24 * time.Hour, true},
+		{"a month", 30 * 24 * time.Hour, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := []gh.WorkflowRun{
+				{ID: 1, Name: "ci", RunStartedAt: epoch},
+				{ID: 2, Name: "ci", RunStartedAt: epoch.Add(tt.span)},
+			}
+			oneMinute := []gh.Job{mkjob([]string{"ubuntu-latest"}, epoch, time.Minute)}
+			jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{1: oneMinute, 2: oneMinute}}
+
+			summary := SummarizeCost(runs, jobs, []WorkflowStats{{Name: "ci"}})
+
+			if got := summary.MonthlyUSD > 0; got != tt.wantMonthly {
+				t.Errorf("MonthlyUSD = %v over %v; wanted a projection: %v",
+					summary.MonthlyUSD, tt.span, tt.wantMonthly)
+			}
+			if summary.TotalUSD == 0 {
+				t.Error("the measured total must be reported regardless")
+			}
+		})
 	}
 }

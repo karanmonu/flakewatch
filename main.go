@@ -13,6 +13,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -111,6 +112,11 @@ func main() {
 		if window > 0 {
 			result.Cost.RequestedWindowDays = window.Hours() / 24
 			result.Cost.WindowTruncated = !windowComplete
+			// What -runs would have covered the ask, at the density observed.
+			if !windowComplete && result.Cost.WindowDays > 0 && result.Cost.RunsPriced > 0 {
+				need := float64(result.Cost.RunsPriced) * result.Cost.RequestedWindowDays / result.Cost.WindowDays
+				result.Cost.RunsForFullWindow = int(math.Ceil(need))
+			}
 		}
 	}
 
