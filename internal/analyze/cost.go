@@ -54,6 +54,9 @@ type CostSummary struct {
 	// UnknownRunnerJobs counts jobs skipped because their runner label had no
 	// published rate. A non-zero value means TotalUSD is an undercount.
 	UnknownRunnerJobs int `json:"unknown_runner_jobs"`
+	// RunsSkippedForBudget counts runs left unfetched to protect the shared API
+	// rate limit. Non-zero means the sample is smaller than requested.
+	RunsSkippedForBudget int `json:"runs_skipped_for_budget"`
 	// UnknownLabels lists the distinct labels behind UnknownRunnerJobs.
 	//
 	// Naming them rather than only counting them means the tool reports its own
@@ -72,8 +75,8 @@ const minWindowForExtrapolation = 24 * time.Hour
 
 // SummarizeCost prices a set of runs and attributes spend per workflow.
 //
-// It fills in the CostUSD field of each workflow stat, replaces AvgDurationSec
-// with measured execution time, and returns the repository-level summary.
+// It fills in the CostUSD field of each workflow stat and returns the
+// repository-level summary.
 func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats) CostSummary {
 	costByWorkflow := make(map[string]float64, len(stats))
 
@@ -161,12 +164,13 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 	sort.Strings(labels) // map order is random; a stable report is diffable
 
 	summary := CostSummary{
-		TotalUSD:          total,
-		RunsPriced:        priced,
-		RunsMissingJobs:   jobs.Missing,
-		SelfHostedJobs:    selfHosted,
-		UnknownRunnerJobs: unknownRunners,
-		UnknownLabels:     labels,
+		TotalUSD:             total,
+		RunsPriced:           priced,
+		RunsMissingJobs:      jobs.Missing,
+		RunsSkippedForBudget: jobs.SkippedForBudget,
+		SelfHostedJobs:       selfHosted,
+		UnknownRunnerJobs:    unknownRunners,
+		UnknownLabels:        labels,
 	}
 
 	var monthlyFactor float64
