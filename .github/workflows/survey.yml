@@ -1,0 +1,41 @@
+# One-off: runs flakewatch against a handful of well-known public repositories
+# so the README can quote measured output rather than an invented example.
+#
+# Public repositories' Actions history is public, so GITHUB_TOKEN is here for
+# the rate limit rather than for access. Each repo costs about 51 requests at
+# -runs 50, which keeps the whole survey inside the hourly budget.
+name: Survey
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [survey]
+
+jobs:
+  survey:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Analyze several public repositories
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          go build -o /tmp/flakewatch .
+          for repo in \
+            grafana/k6 \
+            gohugoio/hugo \
+            cli/cli \
+            rs/zerolog \
+            golangci/golangci-lint \
+            prometheus/prometheus \
+            hashicorp/terraform \
+            vitejs/vite
+          do
+            echo "::group::$repo"
+            /tmp/flakewatch -repo "$repo" -runs 50 -since 30d -cost || echo "(failed for $repo)"
+            echo "::endgroup::"
+          done
