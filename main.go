@@ -20,6 +20,11 @@ import (
 	"github.com/karanmonu/flakewatch/internal/report"
 )
 
+// version is set at build time by goreleaser via ldflags. It stays "dev" for
+// local builds, which is the honest answer for a binary built from a working
+// tree that may not match any tag.
+var version = "dev"
+
 func main() {
 	repo := flag.String("repo", "", "repository in owner/name form (required)")
 	runs := flag.Int("runs", 200, "number of recent workflow runs to analyze")
@@ -27,7 +32,13 @@ func main() {
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
 	concurrency := flag.Int("concurrency", 8, "parallel requests when fetching job data")
 	jsonOut := flag.Bool("json", false, "emit JSON instead of a terminal report")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	if *repo == "" {
 		fmt.Fprintln(os.Stderr, "error: -repo is required (e.g. -repo grafana/k6)")
