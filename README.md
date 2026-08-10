@@ -1,83 +1,104 @@
 # flakewatch
 
-Measures how flaky your GitHub Actions workflows are, and what they cost.
+Find which GitHub Actions workflow is costing you money, and which one is flaky.
 
 [![CI](https://github.com/karanmonu/flakewatch/actions/workflows/ci.yml/badge.svg)](https://github.com/karanmonu/flakewatch/actions/workflows/ci.yml)
 
-Most teams know their CI is flaky the same way they know the office coffee is bad: anecdotally. And GitHub bills Actions in aggregate, so when the number goes up there is no way to find out which workflow did it. flakewatch puts numbers on both.
+GitHub bills Actions in aggregate, so when the bill moves there is no way to find out which workflow moved it. GitHub's own documented answer is to export a usage CSV and process it offline. flakewatch answers it from your repository's run history instead.
 
-Point it at any repo and get:
+## Install
 
-- a flakiness score (0-1) per workflow, from the pass/fail transition rate. An always-failing workflow scores 0 -- that is broken, not flaky
-- an estimate of what each workflow costs, priced per job from the published runner rates
-- zombie run detection: runs stuck `in_progress` for hours, quietly eating runner minutes
-
-## Quickstart
+Download a binary from [releases](https://github.com/karanmonu/flakewatch/releases), or:
 
 ```bash
 go install github.com/karanmonu/flakewatch@latest
+```
 
+## Use
+
+```bash
 export GITHUB_TOKEN=...   # any token with actions:read
-flakewatch -repo owner/name -cost
+flakewatch -repo grafana/k6 -runs 200 -cost
 ```
 
-Real output, produced by [this repo's own CI](https://github.com/karanmonu/flakewatch/actions/workflows/ci.yml) on every build:
+Real output:
 
 ```
-flakewatch report — karanmonu/flakewatch
+flakewatch report — grafana/k6
 ------------------------------------------------------------------------
 
-Estimated spend: $0.10 over 0.1 days  (window too short to project a month)
+Estimated spend: $24.12 over 3.2 days  (~$224/month at this rate)
 This is what the runs would cost at published rates. Public repositories
 are not billed for standard GitHub-hosted runners.
+20 job(s) used a runner label with no published rate and are excluded,
+so this is an undercount. Labels: github-hosted-windows-x64-large
 
 WORKFLOW                      RUNS  FAIL%   FLAKY  AVG(s)      COST
-CI                              15    20%    0.27      40     $0.10  🟡 unstable
+Test                            10    50%    0.33     741     $4.38  🟡 unstable
+Lint                            10    40%    0.32     118     $0.25  🟡 unstable
+Browser tests                   10    10%    0.08    1096     $3.15  🟢 stable
+xk6                             10    10%    0.08     215     $4.85  🟢 stable
+E2E                             12     8%    0.06     313     $9.68  🟢 stable
+TC39                             3     0%       -      43     $0.02  only 3 run(s)
 
-Rates: https://docs.github.com/en/billing/reference/actions-runner-pricing (retrieved 2026-08-10)
+Spend on platforms dearer than Linux:
+WORKFLOW                     PLATFORM  JOBS      COST    ON LINUX  DIFFERENCE
+E2E                          macos       24     $7.94       $0.77  $7.17 (~$66.67/mo)
+xk6                          macos       20     $3.53       $0.34  $3.19 (~$29.69/mo)
+Test                         windows     20     $2.47       $1.48  $0.99 (~$9.19/mo)
+
+These are not recommendations. Jobs that genuinely need macOS or Windows
+should stay there -- this only shows what that choice costs.
 ```
 
-Machine-readable output for dashboards or CI gates:
+Machine-readable, for dashboards or CI gates:
 
 ```bash
 flakewatch -repo owner/name -cost -json | jq '.cost'
 ```
 
-## How the flakiness score works
+## How the cost is measured
 
-For each workflow's chronological run history:
+Costs come from the **jobs** endpoint, not the run timing endpoint. Two reasons, both found by calling the API rather than reading the docs:
+
+- timing reports zero billable time for public repositories, which GitHub does not bill. `grafana/k6` returns a literally empty `billable` object.
+- timing reports only UBUNTU/MACOS/WINDOWS, so a 32-core runner is indistinguishable from a 2-core one. Job records carry the actual runner label.
+
+Billing rounds **each job** up to the whole minute, not the run. A run of ten 30-second jobs bills ten minutes, not five, and the gap widens the wider a matrix fans out — which is exactly where the money is.
+
+## How the flakiness score works
 
 ```
 score = transition_rate × 4p(1-p)
 ```
 
-where `transition_rate` is pass/fail flips divided by (runs - 1), and `p` is the failure rate. The `4p(1-p)` term peaks at `p = 0.5` and is zero at both extremes: a workflow that alternates outcomes is maximally flaky, one that always passes or always fails is not flaky at all.
+`transition_rate` is pass/fail flips divided by (runs - 1); `p` is the failure rate. The `4p(1-p)` term peaks at `p = 0.5` and is zero at both extremes: a workflow that alternates outcomes is maximally flaky, one that always passes or always fails is not flaky at all.
 
-## How the cost estimate works
+Workflows with fewer than five runs in the window get no score. Two runs that differ is one coin flip, and reporting that as maximal flakiness was a real bug.
 
-Costs come from the jobs endpoint, not the run timing endpoint. Two reasons, both found by calling the API rather than reading the docs:
+## What it will not do
 
-- **timing reports zero for public repositories.** GitHub does not bill them, so `billable` comes back empty. Job durations are wall-clock and always present.
-- **timing does not say which runner.** It reports UBUNTU/MACOS/WINDOWS, so a 32-core job looks identical to a 2-core one. Job labels give the actual SKU, which matters when macOS is 10x Linux and a 16-core box is 7x a standard one.
+Jobs on self-hosted runners, and jobs whose runner label has no published rate, are excluded and **named in the output** rather than silently counted as free. A visible gap beats a confident wrong number.
 
-Billing rounds **each job** up to the whole minute, not the run. A run of ten 30-second jobs bills ten minutes, not five -- and the gap widens the wider a matrix fans out, which is exactly where the money is.
+The platform table is an observation, not a recommendation. flakewatch can see that a workflow spends on macOS; it cannot see whether that workflow needs macOS.
 
-Jobs on self-hosted runners, and jobs whose label has no published rate, are excluded rather than counted as free. When that happens the report says so, because a silent zero is worse than a visible gap.
+The **monthly projection is the weakest number here**. It scales whatever window your `-runs` covers up to 30 days, and on a busy repository two samples days apart gave $104/mo and $224/mo. Per-window and per-platform figures are measured and stable; treat the monthly one as indicative ([#11](https://github.com/karanmonu/flakewatch/issues/11)).
+
+Scoring is workflow-level, so a flaky job inside a mostly-green workflow gets diluted.
 
 ## Design notes
 
-No dependencies -- stdlib only, so `go install` is instant and there is nothing to audit. Read-only: it needs `actions:read` and never mutates anything. Longer reasoning lives in [docs/adr/](docs/adr/).
+No dependencies — stdlib only, so `go install` is instant and there is nothing to audit. Read-only: needs `actions:read`, never mutates anything. Reasoning in [docs/adr/](docs/adr/).
 
 CI runs flakewatch against this repository on every build, so a change that breaks against the real API fails the build rather than shipping.
-
-Known limitations: scoring is workflow-level, so a flaky job inside a mostly-green workflow gets diluted. Duration is a plain average and will not catch a slow regression. Both are tracked in the issues.
 
 ## Roadmap
 
 - [x] cost attribution per workflow
+- [x] macOS and Windows spend against the Linux equivalent
 - [ ] job-level flakiness, not just workflow-level
-- [ ] waste rules: macOS legs with no Apple-specific steps, missing concurrency groups, uncached dependency installs
-- [ ] duration regression detection
+- [ ] missing concurrency groups and uncached dependency installs
+- [ ] user-supplied rates for unrecognised and self-hosted runner labels
 - [ ] GitHub Action mode: comment cost and flakiness deltas on PRs
 
 ## License
