@@ -57,6 +57,43 @@ Machine-readable, for dashboards or CI gates:
 flakewatch -repo owner/name -cost -json | jq '.cost'
 ```
 
+## Use it as a GitHub Action
+
+Comment the same numbers on any pull request that touches a workflow file:
+
+```yaml
+name: flakewatch
+on: pull_request
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to see which files the PR changed
+      - uses: karanmonu/flakewatch@v0.3.0
+```
+
+It stays quiet by default: no workflow files changed, no comment. When it does comment, it edits its own comment rather than adding a new one on every push.
+
+| Input | Default | What it does |
+|---|---|---|
+| `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
+| `runs` | `50` | Recent runs to analyze. One API request each |
+| `version` | `v0.3.0` | Release to download |
+| `always-comment` | `false` | Comment on every PR, not just workflow changes |
+
+Two properties it holds to, because a reporting tool that breaks your pipeline is worse than no reporting tool:
+
+- **It never fails your build.** Every failure path — an unreachable release asset, a bad token, a fork's read-only token — becomes a workflow annotation and a green check.
+- **It leaves your API budget alone.** Inside Actions the `GITHUB_TOKEN` allows roughly 1,000 requests an hour, *shared with every other workflow in the repository*. flakewatch reads its remaining budget from the response headers, keeps 100 requests in reserve, and shrinks the sample rather than spending the lot. A truncated analysis says so in the comment.
+
 ## How the cost is measured
 
 Costs come from the **jobs** endpoint, not the run timing endpoint. Two reasons, both found by calling the API rather than reading the docs:
@@ -99,7 +136,8 @@ CI runs flakewatch against this repository on every build, so a change that brea
 - [ ] job-level flakiness, not just workflow-level
 - [ ] missing concurrency groups and uncached dependency installs
 - [ ] user-supplied rates for unrecognised and self-hosted runner labels
-- [ ] GitHub Action mode: comment cost and flakiness deltas on PRs
+- [x] GitHub Action mode: comment cost and flakiness on PRs
+- [ ] time-window sampling (`--since 30d`) instead of a fixed run count
 
 ## License
 
