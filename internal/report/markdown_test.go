@@ -137,8 +137,11 @@ func TestMarkdownLeadsWithTheTouchedWorkflow(t *testing.T) {
 	if !strings.Contains(out, "This pull request touches **Test**") {
 		t.Error("the lead sentence should name the workflow the PR touches")
 	}
-	// E2E costs more, but Test is the one being edited, so it goes first.
-	if strings.Index(out, "`Test`") > strings.Index(out, "`E2E`") {
+	// E2E costs more, so it goes first in the table -- but the lead paragraph
+	// names E2E as the largest line before the table starts, so the comparison
+	// has to be scoped to the table or it reads the wrong occurrence.
+	table := out[strings.Index(out, "| Workflow |"):]
+	if strings.Index(table, "`Test`") > strings.Index(table, "`E2E`") {
 		t.Error("a touched workflow must sort above a costlier untouched one")
 	}
 }
