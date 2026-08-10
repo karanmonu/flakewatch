@@ -19,6 +19,12 @@ jobs:
         run: go test -race -cover ./...
       - name: Build
         run: go build ./...
+      - name: Gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would change:"; echo "$unformatted"; exit 1
+          fi
 
   # Runs flakewatch against its own repository so every build produces real
   # output. Catches the class of bug unit tests cannot: a response shape that
@@ -35,3 +41,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: go run . -repo "$GITHUB_REPOSITORY" -runs 30 -cost
+
+      # Exercises the two flags the Action passes, against the live API: a fixed
+      # window, and a workflow path to scope the comment to. The grep matters --
+      # a -changed value that silently matches nothing produces a comment that
+      # looks exactly like the feature working.
+      - name: Analyze a fixed window, scoped to one workflow
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          go run . -repo "$GITHUB_REPOSITORY" -runs 30 -since 30d \
+            -changed .github/workflows/ci.yml -markdown | tee /tmp/comment.md
+          grep -q 'touches \*\*CI\*\*' /tmp/comment.md
