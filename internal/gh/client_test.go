@@ -555,6 +555,7 @@ func TestListWorkflowRunsSinceStopsOnAnEmptyPage(t *testing.T) {
 		t.Errorf("made %d requests; an empty page should end pagination", pages)
 	}
 }
+
 // GitHub paginates by offset, so page N returns items [(N-1)*per_page, N*per_page).
 // per_page therefore has to stay constant across pages: shrinking it to "only ask
 // for what is left" silently changes what page 2 means, re-requesting rows already
