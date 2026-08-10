@@ -51,6 +51,14 @@ These are not recommendations. Jobs that genuinely need macOS or Windows
 should stay there -- this only shows what that choice costs.
 ```
 
+Analyze a fixed time window rather than a fixed number of runs:
+
+```bash
+flakewatch -repo owner/name -since 30d -cost
+```
+
+This is the difference between a monthly figure that moves every time you run it and one that does not — a run count covers however many days that repo happened to be busy for. `-runs` still caps how many API requests the window can cost, and the report says so when the cap is reached before the window is covered.
+
 Machine-readable, for dashboards or CI gates:
 
 ```bash
@@ -82,10 +90,13 @@ jobs:
 
 It stays quiet by default: no workflow files changed, no comment. When it does comment, it edits its own comment rather than adding a new one on every push.
 
+The comment leads with the workflows **this** pull request edits, and shows the rest of CI underneath — "is this change expensive" is only answerable against what everything else costs. Matching is on the workflow file path rather than its name, because names collide and get renamed while `.github/workflows/ci.yml` is what a diff actually gives you.
+
 | Input | Default | What it does |
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
-| `runs` | `50` | Recent runs to analyze. One API request each |
+| `runs` | `50` | Cap on runs analyzed. One API request each |
+| `since` | `30d` | Time window to analyze. Keeps the monthly figure stable |
 | `version` | `v0.3.0` | Release to download |
 | `always-comment` | `false` | Comment on every PR, not just workflow changes |
 
@@ -119,7 +130,7 @@ Jobs on self-hosted runners, and jobs whose runner label has no published rate, 
 
 The platform table is an observation, not a recommendation. flakewatch can see that a workflow spends on macOS; it cannot see whether that workflow needs macOS.
 
-The **monthly projection is the weakest number here**. It scales whatever window your `-runs` covers up to 30 days, and on a busy repository two samples days apart gave $104/mo and $224/mo. Per-window and per-platform figures are measured and stable; treat the monthly one as indicative ([#11](https://github.com/karanmonu/flakewatch/issues/11)).
+The **monthly projection is the weakest number here**. With a plain `-runs` count it scales whatever window those runs happened to cover, and on a busy repository two samples days apart gave $104/mo and $224/mo ([#11](https://github.com/karanmonu/flakewatch/issues/11)). `-since 30d` fixes the window instead of the sample size, which is what makes the number comparable between runs; if the run cap is hit first, the report says how much of the window it actually covered. Per-window and per-platform figures are measured and stable either way.
 
 Scoring is workflow-level, so a flaky job inside a mostly-green workflow gets diluted.
 
@@ -137,7 +148,7 @@ CI runs flakewatch against this repository on every build, so a change that brea
 - [ ] missing concurrency groups and uncached dependency installs
 - [ ] user-supplied rates for unrecognised and self-hosted runner labels
 - [x] GitHub Action mode: comment cost and flakiness on PRs
-- [ ] time-window sampling (`--since 30d`) instead of a fixed run count
+- [x] time-window sampling (`-since 30d`) instead of a fixed run count
 
 ## License
 
