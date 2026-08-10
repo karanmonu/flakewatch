@@ -4,6 +4,7 @@ package analyze
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/karanmonu/flakewatch/internal/gh"
@@ -15,6 +16,10 @@ type Options struct {
 	ZombieHours float64
 	// Now allows tests to pin the clock; zero value means time.Now().
 	Now time.Time
+	// ChangedPaths are workflow files the caller cares about, in repository-root
+	// form (".github/workflows/ci.yml"). Used by the Action to mark the
+	// workflows a pull request actually touches. Empty means "all of them".
+	ChangedPaths []string
 }
 
 // WorkflowStats summarizes one workflow's recent history.
@@ -30,6 +35,10 @@ type WorkflowStats struct {
 	// ScoreConfident reports whether there were enough runs for the flakiness
 	// score to mean anything. See MinRunsForScore.
 	ScoreConfident bool `json:"score_confident"`
+	// Path is the workflow file, e.g. ".github/workflows/ci.yml".
+	Path string `json:"path,omitempty"`
+	// Touched reports whether this workflow is one of Options.ChangedPaths.
+	Touched bool `json:"touched,omitempty"`
 }
 
 // MinRunsForScore is the fewest completed runs before a flakiness score is
@@ -66,6 +75,13 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 		now = time.Now()
 	}
 
+	changed := make(map[string]struct{}, len(opts.ChangedPaths))
+	for _, p := range opts.ChangedPaths {
+		if p = strings.TrimSpace(p); p != "" {
+			changed[p] = struct{}{}
+		}
+	}
+
 	byWorkflow := make(map[string][]gh.WorkflowRun)
 	var zombies []Zombie
 
@@ -87,7 +103,10 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 		// Chronological order (API returns newest first).
 		sort.Slice(wr, func(i, j int) bool { return wr[i].RunStartedAt.Before(wr[j].RunStartedAt) })
 
-		s := WorkflowStats{Name: name, Runs: len(wr)}
+		s := WorkflowStats{Name: name, Runs: len(wr), Path: wr[0].Path}
+		if _, ok := changed[s.Path]; ok && s.Path != "" {
+			s.Touched = true
+		}
 		var totalDur float64
 		for i, r := range wr {
 			if r.Conclusion == "failure" {
