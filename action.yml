@@ -23,6 +23,15 @@ inputs:
       it. Raise it on quiet repositories.
     required: false
     default: "50"
+  since:
+    description: >-
+      Time window to analyze, e.g. 30d. A fixed window keeps the monthly
+      projection from moving between runs, which a fixed run count does not.
+      The runs input still caps how many requests this can cost, and the
+      comment says so when the cap is reached before the window is covered.
+      Set to an empty string to go back to a plain run count.
+    required: false
+    default: 30d
   version:
     description: flakewatch release to use.
     required: false
@@ -63,8 +72,13 @@ runs:
           echo "::warning::Base commit not available. Check out with fetch-depth: 0 to enable workflow-change detection. Commenting anyway."
           echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
         fi
-        if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -q '^\.github/workflows/'; then
+        files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep '^\.github/workflows/' | paste -sd, -)
+        if [ -n "$files" ]; then
           echo "relevant=true" >> "$GITHUB_OUTPUT"
+          # Passed to -changed so the comment leads with the workflows this pull
+          # request edits rather than the whole repository's bill.
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "Changed workflows: $files"
         else
           echo "relevant=false" >> "$GITHUB_OUTPUT"
           echo "No workflow files changed; nothing to report."
@@ -94,10 +108,12 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         RUNS: ${{ inputs.runs }}
+        SINCE: ${{ inputs.since }}
+        CHANGED: ${{ steps.changed.outputs.files }}
         REPO: ${{ github.repository }}
       run: |
         set -uo pipefail
-        if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
+        if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -since "$SINCE" -changed "$CHANGED" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
           echo "::warning::flakewatch could not analyze $REPO: $(head -c 400 /tmp/flakewatch-err.txt)"
           echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
         fi
@@ -124,7 +140,7 @@ runs:
           exit 0
         fi
 
-        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \\
           --jq 'map(select(.body | startswith("<!-- flakewatch:report -->"))) | .[0].id // empty') || existing=""
 
         if [ -n "$existing" ]; then
