@@ -75,8 +75,8 @@ const minWindowForExtrapolation = 24 * time.Hour
 
 // SummarizeCost prices a set of runs and attributes spend per workflow.
 //
-// It fills in the CostUSD field of each workflow stat and returns the
-// repository-level summary.
+// It fills in the CostUSD field of each workflow stat, replaces AvgDurationSec
+// with measured execution time, and returns the repository-level summary.
 func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats) CostSummary {
 	costByWorkflow := make(map[string]float64, len(stats))
 
