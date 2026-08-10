@@ -35,7 +35,7 @@ inputs:
   version:
     description: flakewatch release to use.
     required: false
-    default: v0.3.0
+    default: v0.4.1
   always-comment:
     description: >-
       Comment on every pull request rather than only those touching
@@ -47,10 +47,17 @@ inputs:
 runs:
   using: composite
   steps:
-    # Every step below ends in exit 0. This action reports; it does not judge.
-    # A red check on someone's pull request because a reporting tool could not
-    # reach a release asset is a bad trade, so failures become annotations and
-    # the remaining steps skip themselves.
+    # Every step below opens with `set +e` and ends in exit 0. This action
+    # reports; it does not judge. A red check on someone's pull request because
+    # a reporting tool could not reach a release asset is a bad trade, so
+    # failures become annotations and the remaining steps skip themselves.
+    #
+    # The `set +e` is load-bearing and easy to delete by accident. GitHub
+    # invokes `shell: bash` as `bash -eo pipefail`, so -e is already on before
+    # the script starts, and an in-script `set -uo pipefail` adds -u without
+    # removing -e. Without `set +e`, a grep that matches nothing -- which is
+    # what happens on every pull request that touches no workflow files, i.e.
+    # most of them -- fails the step, the job, and the caller's build.
     - name: Check whether this PR touches workflows
       id: changed
       shell: bash
@@ -59,6 +66,7 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
+        set +e  # see the note above; -e is on before this script starts
         set -uo pipefail
         if [ -z "${BASE_SHA:-}" ]; then
           echo "::warning::flakewatch found no pull request context; skipping."
@@ -91,6 +99,7 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
       run: |
+        set +e  # see the note above; -e is on before this script starts
         set -uo pipefail
         url="https://github.com/karanmonu/flakewatch/releases/download/${VERSION}/flakewatch_linux_amd64.tar.gz"
         if ! curl -fsSL --retry 2 --retry-delay 2 "$url" | tar xz -C /tmp flakewatch; then
@@ -112,6 +121,7 @@ runs:
         CHANGED: ${{ steps.changed.outputs.files }}
         REPO: ${{ github.repository }}
       run: |
+        set +e  # see the note above; -e is on before this script starts
         set -uo pipefail
         if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -since "$SINCE" -changed "$CHANGED" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
           echo "::warning::flakewatch could not analyze $REPO: $(head -c 400 /tmp/flakewatch-err.txt)"
@@ -132,6 +142,7 @@ runs:
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
       run: |
+        set +e  # see the note above; -e is on before this script starts
         set -uo pipefail
         # Build the JSON body with jq rather than relying on shell quoting -
         # the comment contains backticks, quotes and newlines.

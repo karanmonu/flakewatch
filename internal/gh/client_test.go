@@ -555,3 +555,53 @@ func TestListWorkflowRunsSinceStopsOnAnEmptyPage(t *testing.T) {
 		t.Errorf("made %d requests; an empty page should end pagination", pages)
 	}
 }
+
+// GitHub paginates by offset, so page N returns items [(N-1)*per_page, N*per_page).
+// per_page therefore has to stay constant across pages: shrinking it to "only ask
+// for what is left" silently changes what page 2 means, re-requesting rows already
+// held and skipping the ones after them. The visible symptom is a cost total that
+// counts some runs twice.
+//
+// 150 is the smallest cap that exercises it. 50 is one page and 200 is two clean
+// pages, which is why the Action default and the README survey never tripped it.
+func TestListWorkflowRunsSinceDoesNotRefetchRowsAcrossPages(t *testing.T) {
+	now := time.Now().UTC()
+	var perPages []string
+
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		perPages = append(perPages, q.Get("per_page"))
+		perPage, _ := strconv.Atoi(q.Get("per_page"))
+		page, _ := strconv.Atoi(q.Get("page"))
+
+		// Offset pagination, the way GitHub actually does it.
+		runs := make([]WorkflowRun, 0, perPage)
+		for i := 0; i < perPage; i++ {
+			id := int64((page-1)*perPage + i + 1)
+			runs = append(runs, WorkflowRun{ID: id, RunStartedAt: now.Add(-time.Duration(id) * time.Minute)})
+		}
+		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
+	}))
+
+	runs, _, err := c.ListWorkflowRunsSince("o/r", now.Add(-30*24*time.Hour), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 150 {
+		t.Fatalf("got %d runs, want the cap of 150", len(runs))
+	}
+
+	seen := make(map[int64]bool, len(runs))
+	for _, r := range runs {
+		if seen[r.ID] {
+			t.Fatalf("run %d came back twice; its cost would be counted twice", r.ID)
+		}
+		seen[r.ID] = true
+	}
+
+	for i, p := range perPages {
+		if p != "100" {
+			t.Errorf("request %d used per_page=%s; it must not change between pages", i+1, p)
+		}
+	}
+}

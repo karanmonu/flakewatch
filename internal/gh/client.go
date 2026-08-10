@@ -202,11 +202,18 @@ func (c *Client) ListWorkflowRunsSince(repo string, since time.Time, max int) ([
 	var all []WorkflowRun
 	reachedWindow := false
 
+	// per_page stays fixed for every page. GitHub paginates by offset, so page N
+	// returns items [(N-1)*per_page, N*per_page). Shrinking per_page on later
+	// pages to "only ask for what is left" therefore re-requests rows already
+	// seen and skips the ones after them: with max=150 the second page would
+	// come back as items 51-100 again, double-counting fifty runs' cost and
+	// losing runs 101-150 entirely. Over-fetch and trim at the end instead.
+	perPage := 100
+	if max < perPage {
+		perPage = max
+	}
+
 	for page := 1; len(all) < max; page++ {
-		perPage := 100
-		if remaining := max - len(all); remaining < perPage {
-			perPage = remaining
-		}
 
 		var pageData runsPage
 		path := fmt.Sprintf("/repos/%s/actions/runs?per_page=%d&page=%d&created=%s", repo, perPage, page, created)
