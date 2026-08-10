@@ -25,6 +25,7 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 
 	if showCost {
 		writeCostHeadline(w, r.Cost)
+		writeRunReconciliation(w, r)
 	}
 
 	if len(r.Workflows) == 0 {
@@ -106,8 +107,12 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 			"so this covers a smaller sample than requested. Lower -runs to avoid it.\n", c.RunsSkippedForBudget)
 	}
 	if c.WindowTruncated && c.RequestedWindowDays > 0 {
-		fmt.Fprintf(w, "Asked for %.0f days but hit the run cap first, so this covers %.1f days.\n"+
-			"Raise -runs to cover the full window.\n", c.RequestedWindowDays, c.WindowDays)
+		fmt.Fprintf(w, "Asked for %.0f days but hit the run cap first, so this covers %.1f days.\n",
+			c.RequestedWindowDays, c.WindowDays)
+		if c.RunsForFullWindow > 0 {
+			fmt.Fprintf(w, "About -runs %d would cover the full window, at one request per run.\n",
+				c.RunsForFullWindow)
+		}
 	}
 	fmt.Fprintln(w)
 }
