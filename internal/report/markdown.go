@@ -106,6 +106,9 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 	if c.RunsMissingJobs > 0 {
 		fmt.Fprintf(&b, "- %d run(s) had no job data left (logs aged out) and are excluded.\n", c.RunsMissingJobs)
 	}
+	if c.RunsSkippedForBudget > 0 {
+		fmt.Fprintf(&b, "- %d run(s) were not fetched, to leave the repository's shared API rate limit intact. This sample is smaller than requested.\n", c.RunsSkippedForBudget)
+	}
 	b.WriteString("- The monthly figure is a projection from the observed window and is the least reliable number here.\n")
 	b.WriteString("\n</details>\n")
 
