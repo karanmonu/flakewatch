@@ -86,3 +86,54 @@ func TestZombieDetection(t *testing.T) {
 	}
 }
 
+// Workflow names collide and get renamed; a pull request diff gives you paths.
+// Matching on the path is the only version that survives a rename.
+func TestAnalyzeMarksTheWorkflowsTheCallerChanged(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runs := []gh.WorkflowRun{
+		{Name: "CI", Path: ".github/workflows/ci.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+		{Name: "Release", Path: ".github/workflows/release.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+	}
+
+	got := Analyze(runs, Options{ChangedPaths: []string{".github/workflows/ci.yml"}})
+
+	for _, s := range got.Workflows {
+		want := s.Name == "CI"
+		if s.Touched != want {
+			t.Errorf("%s: Touched = %v, want %v", s.Name, s.Touched, want)
+		}
+		if s.Path == "" {
+			t.Errorf("%s: Path is empty; the run record carries it", s.Name)
+		}
+	}
+}
+
+// No -changed flag means the caller did not scope the request. Marking
+// everything would be the same as marking nothing, but noisier.
+func TestAnalyzeMarksNothingWithoutChangedPaths(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runs := []gh.WorkflowRun{
+		{Name: "CI", Path: ".github/workflows/ci.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+	}
+
+	for _, s := range Analyze(runs, Options{}).Workflows {
+		if s.Touched {
+			t.Errorf("%s was marked as touched with no ChangedPaths set", s.Name)
+		}
+	}
+}
+
+// A path that matches nothing must not quietly mark the first workflow, and a
+// run with no path recorded must not match an empty entry in the changed list.
+func TestAnalyzeIgnoresPathsThatMatchNothing(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runs := []gh.WorkflowRun{
+		{Name: "CI", Status: "completed", Conclusion: "success", RunStartedAt: start},
+	}
+
+	for _, s := range Analyze(runs, Options{ChangedPaths: []string{".github/workflows/nope.yml", "", "  "}}).Workflows {
+		if s.Touched {
+			t.Errorf("%s was marked as touched by a path that does not exist", s.Name)
+		}
+	}
+}

@@ -24,9 +24,24 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 
 	b.WriteString(CommentMarker + "\n")
 	b.WriteString("## flakewatch\n\n")
-	b.WriteString("This pull request changes workflow files. Here is what CI on `")
-	b.WriteString(repo)
-	b.WriteString("` costs today.\n\n")
+
+	// Naming the workflows this pull request actually touches is the difference
+	// between a comment someone reads and a comment someone mutes. The whole-repo
+	// table stays below it, because "is this change expensive" is only answerable
+	// against what the rest of CI costs.
+	touched := touchedNames(r.Workflows)
+	switch len(touched) {
+	case 0:
+		b.WriteString("This pull request changes workflow files. Here is what CI on `")
+		b.WriteString(repo)
+		b.WriteString("` costs today.\n\n")
+	case 1:
+		fmt.Fprintf(&b, "This pull request touches **%s**. Here is what it costs today, against the rest of CI on `%s`.\n\n",
+			touched[0], repo)
+	default:
+		fmt.Fprintf(&b, "This pull request touches **%s**. Here is what they cost today, against the rest of CI on `%s`.\n\n",
+			strings.Join(touched, "**, **"), repo)
+	}
 
 	c := r.Cost
 	switch {
@@ -42,30 +57,47 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 			usd(c.TotalUSD), c.WindowDays)
 	}
 
-	// Costliest workflows first — that is the question someone editing CI has.
+	// Workflows this pull request touches first, then costliest — those are the
+	// two questions someone editing CI has, in that order.
 	byCost := make([]analyze.WorkflowStats, len(r.Workflows))
 	copy(byCost, r.Workflows)
-	sort.Slice(byCost, func(i, j int) bool { return byCost[i].CostUSD > byCost[j].CostUSD })
+	sort.Slice(byCost, func(i, j int) bool {
+		if byCost[i].Touched != byCost[j].Touched {
+			return byCost[i].Touched
+		}
+		return byCost[i].CostUSD > byCost[j].CostUSD
+	})
 
-	if len(byCost) > 0 && c.TotalUSD > 0 {
-		top := byCost[0]
+	// The largest line is found independently of the display order. Reading it
+	// off the top row was correct while the table was sorted purely by cost, and
+	// silently wrong the moment touched workflows started sorting above it.
+	if top, ok := costliest(r.Workflows); ok && c.TotalUSD > 0 {
 		fmt.Fprintf(&b, "`%s` is the largest single line at %s — %.0f%% of the total.\n\n",
 			top.Name, usd(top.CostUSD), top.CostUSD/c.TotalUSD*100)
 	}
 
 	b.WriteString("| Workflow | Runs | Fail % | Flakiness | Cost |\n")
 	b.WriteString("|---|---:|---:|---:|---:|\n")
+	rows := maxRows
+	if n := len(touched); n > rows {
+		// A pull request touching seven workflows must still see all seven.
+		rows = n
+	}
 	for i, s := range byCost {
-		if i >= maxRows {
-			fmt.Fprintf(&b, "| _…and %d more_ | | | | |\n", len(byCost)-maxRows)
+		if i >= rows {
+			fmt.Fprintf(&b, "| _…and %d more_ | | | | |\n", len(byCost)-rows)
 			break
 		}
 		flaky := fmt.Sprintf("%.2f", s.FlakinessScore)
 		if !s.ScoreConfident {
 			flaky = fmt.Sprintf("– _(%d runs)_", s.Runs)
 		}
-		fmt.Fprintf(&b, "| `%s` | %d | %.0f%% | %s | %s |\n",
-			s.Name, s.Runs, s.FailureRate*100, flaky, usd(s.CostUSD))
+		name := fmt.Sprintf("`%s`", s.Name)
+		if s.Touched {
+			name += " ←"
+		}
+		fmt.Fprintf(&b, "| %s | %d | %.0f%% | %s | %s |\n",
+			name, s.Runs, s.FailureRate*100, flaky, usd(s.CostUSD))
 	}
 	b.WriteString("\n")
 
@@ -106,6 +138,10 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 	if c.RunsMissingJobs > 0 {
 		fmt.Fprintf(&b, "- %d run(s) had no job data left (logs aged out) and are excluded.\n", c.RunsMissingJobs)
 	}
+	if c.WindowTruncated && c.RequestedWindowDays > 0 {
+		fmt.Fprintf(&b, "- Asked for %.0f days but the run cap was reached first, so this covers %.1f days. The monthly figure is extrapolated from the shorter window.\n",
+			c.RequestedWindowDays, c.WindowDays)
+	}
 	if c.RunsSkippedForBudget > 0 {
 		fmt.Fprintf(&b, "- %d run(s) were not fetched, to leave the repository's shared API rate limit intact. This sample is smaller than requested.\n", c.RunsSkippedForBudget)
 	}
@@ -114,4 +150,35 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// touchedNames lists the workflows the caller flagged as changed, costliest
+// first so the lead sentence names the expensive one when there are several.
+func touchedNames(stats []analyze.WorkflowStats) []string {
+	var t []analyze.WorkflowStats
+	for _, s := range stats {
+		if s.Touched {
+			t = append(t, s)
+		}
+	}
+	sort.Slice(t, func(i, j int) bool { return t[i].CostUSD > t[j].CostUSD })
+
+	names := make([]string, 0, len(t))
+	for _, s := range t {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+// costliest returns the highest-spending workflow, regardless of how the table
+// happens to be ordered.
+func costliest(stats []analyze.WorkflowStats) (analyze.WorkflowStats, bool) {
+	var top analyze.WorkflowStats
+	found := false
+	for _, s := range stats {
+		if !found || s.CostUSD > top.CostUSD {
+			top, found = s, true
+		}
+	}
+	return top, found
 }

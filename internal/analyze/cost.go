@@ -57,6 +57,12 @@ type CostSummary struct {
 	// RunsSkippedForBudget counts runs left unfetched to protect the shared API
 	// rate limit. Non-zero means the sample is smaller than requested.
 	RunsSkippedForBudget int `json:"runs_skipped_for_budget"`
+	// WindowTruncated is true when -since asked for a longer window than the run
+	// cap allowed. The figures are real; they just cover less time than asked
+	// for, which matters most for the monthly projection.
+	WindowTruncated bool `json:"window_truncated,omitempty"`
+	// RequestedWindowDays is the window -since asked for, zero when unused.
+	RequestedWindowDays float64 `json:"requested_window_days,omitempty"`
 	// UnknownLabels lists the distinct labels behind UnknownRunnerJobs.
 	//
 	// Naming them rather than only counting them means the tool reports its own

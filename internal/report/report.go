@@ -105,6 +105,10 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 		fmt.Fprintf(w, "%d run(s) were not fetched to protect the shared API rate limit,\n"+
 			"so this covers a smaller sample than requested. Lower -runs to avoid it.\n", c.RunsSkippedForBudget)
 	}
+	if c.WindowTruncated && c.RequestedWindowDays > 0 {
+		fmt.Fprintf(w, "Asked for %.0f days but hit the run cap first, so this covers %.1f days.\n"+
+			"Raise -runs to cover the full window.\n", c.RequestedWindowDays, c.WindowDays)
+	}
 	fmt.Fprintln(w)
 }
 

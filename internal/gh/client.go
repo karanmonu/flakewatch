@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -13,11 +14,15 @@ import (
 
 // WorkflowRun is the subset of the GitHub Actions run object we analyze.
 type WorkflowRun struct {
-	ID           int64     `json:"id"`
-	Name         string    `json:"name"`
-	HeadBranch   string    `json:"head_branch"`
-	Status       string    `json:"status"`     // queued | in_progress | completed
-	Conclusion   string    `json:"conclusion"` // success | failure | cancelled | ...
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	HeadBranch string `json:"head_branch"`
+	Status     string `json:"status"`     // queued | in_progress | completed
+	Conclusion string `json:"conclusion"` // success | failure | cancelled | ...
+	// Path is the workflow file this run came from, e.g.
+	// ".github/workflows/ci.yml". Names collide and get renamed; the path is
+	// what a pull request diff actually gives you.
+	Path         string    `json:"path"`
 	RunStartedAt time.Time `json:"run_started_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	HTMLURL      string    `json:"html_url"`
@@ -180,4 +185,55 @@ func (c *Client) ListWorkflowRuns(repo string, max int) ([]WorkflowRun, error) {
 		all = all[:max]
 	}
 	return all, nil
+}
+
+// ListWorkflowRunsSince fetches runs started on or after since, newest first,
+// up to max runs.
+//
+// It reports complete=false when max was reached before the window was covered,
+// which matters: the caller asked about 30 days and is holding 4 days of data,
+// and a monthly projection built from that should say so.
+//
+// The created filter GitHub accepts is date-granular, so the last page is
+// trimmed here to the exact instant.
+func (c *Client) ListWorkflowRunsSince(repo string, since time.Time, max int) ([]WorkflowRun, bool, error) {
+	created := url.QueryEscape(">=" + since.UTC().Format("2006-01-02"))
+
+	var all []WorkflowRun
+	reachedWindow := false
+
+	for page := 1; len(all) < max; page++ {
+		perPage := 100
+		if remaining := max - len(all); remaining < perPage {
+			perPage = remaining
+		}
+
+		var pageData runsPage
+		path := fmt.Sprintf("/repos/%s/actions/runs?per_page=%d&page=%d&created=%s", repo, perPage, page, created)
+		if err := c.get(path, &pageData); err != nil {
+			return nil, false, err
+		}
+		if len(pageData.WorkflowRuns) == 0 {
+			reachedWindow = true // nothing older left to ask for
+			break
+		}
+
+		for _, r := range pageData.WorkflowRuns {
+			if r.RunStartedAt.Before(since) {
+				// The date-granular filter let in part of the day before.
+				reachedWindow = true
+				continue
+			}
+			all = append(all, r)
+		}
+		if reachedWindow || len(all) >= pageData.TotalCount {
+			reachedWindow = true
+			break
+		}
+	}
+
+	if len(all) > max {
+		all = all[:max]
+	}
+	return all, reachedWindow, nil
 }

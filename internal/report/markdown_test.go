@@ -118,3 +118,97 @@ func TestMarkdownStaysSilentWhenNothingWasSkipped(t *testing.T) {
 		t.Error("caveats for things that did not happen are noise")
 	}
 }
+
+// The comment that opens with the whole repository's bill is a comment people
+// mute. Naming the workflow the pull request actually edits is the difference.
+func TestMarkdownLeadsWithTheTouchedWorkflow(t *testing.T) {
+	r := sample()
+	for i := range r.Workflows {
+		if r.Workflows[i].Name == "Test" {
+			r.Workflows[i].Touched = true
+		}
+	}
+
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", r); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	if !strings.Contains(out, "This pull request touches **Test**") {
+		t.Error("the lead sentence should name the workflow the PR touches")
+	}
+	// E2E costs more, so it goes first in the table -- but the lead paragraph
+	// names E2E as the largest line before the table starts, so the comparison
+	// has to be scoped to the table or it reads the wrong occurrence.
+	table := out[strings.Index(out, "| Workflow |"):]
+	if strings.Index(table, "`Test`") > strings.Index(table, "`E2E`") {
+		t.Error("a touched workflow must sort above a costlier untouched one")
+	}
+}
+
+func TestMarkdownNamesEveryTouchedWorkflow(t *testing.T) {
+	r := sample()
+	r.Workflows[0].Touched = true
+	r.Workflows[1].Touched = true
+
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "**E2E**, **Test**") {
+		t.Error("both touched workflows should be named, costliest first")
+	}
+}
+
+// Without -changed there is nothing to scope to, and the comment must fall back
+// to the whole-repository framing rather than claiming the PR touches nothing.
+func TestMarkdownFallsBackWhenNothingIsMarked(t *testing.T) {
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "This pull request changes workflow files") {
+		t.Error("expected the unscoped lead sentence")
+	}
+	if strings.Contains(out, "touches **") {
+		t.Error("nothing was marked, so nothing should be named as touched")
+	}
+}
+
+// Regression: the "largest single line" sentence used to read the top table
+// row. Once touched workflows started sorting above costlier ones, that made
+// the sentence name the wrong workflow and quote the wrong share.
+func TestMarkdownNamesTheRealLargestLineNotTheTopRow(t *testing.T) {
+	r := sample()
+	for i := range r.Workflows {
+		if r.Workflows[i].Name == "Test" { // $4.38, against E2E at $9.68
+			r.Workflows[i].Touched = true
+		}
+	}
+
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "`E2E` is the largest single line") {
+		t.Error("the largest line is E2E even though Test is displayed first")
+	}
+}
+
+// A monthly figure extrapolated from four days when thirty were requested is a
+// different claim from one measured over thirty, and has to read as one.
+func TestMarkdownDisclosesATruncatedWindow(t *testing.T) {
+	r := sample()
+	r.Cost.RequestedWindowDays = 30
+	r.Cost.WindowTruncated = true
+
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "Asked for 30 days") {
+		t.Error("a window cut short by the run cap must be disclosed")
+	}
+}

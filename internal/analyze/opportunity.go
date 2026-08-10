@@ -101,4 +101,3 @@ func findOpportunities(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor 
 	})
 	return out
 }
-

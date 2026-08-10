@@ -105,4 +105,3 @@ func TestMonthlyDeltaUsesTheSuppliedFactor(t *testing.T) {
 		t.Errorf("MonthlyDeltaUSD = %v, want %v", opps[0].MonthlyDeltaUSD, opps[0].DeltaUSD*10)
 	}
 }
-

@@ -119,4 +119,3 @@ func TestMacOSIsAnOrderOfMagnitudeDearerThanUbuntu(t *testing.T) {
 		t.Errorf("macOS/ubuntu ratio is %.1fx, expected ~10x -- check rates against %s", ratio, RatesSource)
 	}
 }
-

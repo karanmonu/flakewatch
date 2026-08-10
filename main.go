@@ -4,7 +4,7 @@
 //
 // Usage:
 //
-//	flakewatch -repo owner/name [-runs 200] [-zombie-hours 6] [-cost]
+//	flakewatch -repo owner/name [-runs 200] [-since 30d] [-zombie-hours 6] [-cost]
 //
 // Authentication uses the GITHUB_TOKEN environment variable (a classic PAT or
 // fine-grained token with actions:read is sufficient).
@@ -14,6 +14,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/karanmonu/flakewatch/internal/analyze"
 	"github.com/karanmonu/flakewatch/internal/gh"
@@ -27,7 +30,9 @@ var version = "dev"
 
 func main() {
 	repo := flag.String("repo", "", "repository in owner/name form (required)")
-	runs := flag.Int("runs", 200, "number of recent workflow runs to analyze")
+	runs := flag.Int("runs", 200, "maximum number of recent workflow runs to analyze")
+	since := flag.String("since", "", "analyze a fixed time window instead of a run count, e.g. 30d, 2w, 48h (-runs still caps the requests)")
+	changed := flag.String("changed", "", "comma-separated workflow paths the caller changed, e.g. .github/workflows/ci.yml (marked in -markdown output)")
 	zombieHours := flag.Float64("zombie-hours", 6, "runs in progress longer than this are flagged as zombies")
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
 	concurrency := flag.Int("concurrency", 8, "parallel requests when fetching job data")
@@ -55,14 +60,37 @@ func main() {
 		}
 	}
 
+	var window time.Duration
+	if *since != "" {
+		var err error
+		window, err = parseWindow(*since)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: -since %q: %v\n", *since, err)
+			os.Exit(2)
+		}
+	}
+
 	client := gh.NewClient(token)
-	workflowRuns, err := client.ListWorkflowRuns(*repo, *runs)
+
+	var (
+		workflowRuns   []gh.WorkflowRun
+		windowComplete = true
+		err            error
+	)
+	if window > 0 {
+		workflowRuns, windowComplete, err = client.ListWorkflowRunsSince(*repo, time.Now().Add(-window), *runs)
+	} else {
+		workflowRuns, err = client.ListWorkflowRuns(*repo, *runs)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching workflow runs: %v\n", err)
 		os.Exit(1)
 	}
 
-	result := analyze.Analyze(workflowRuns, analyze.Options{ZombieHours: *zombieHours})
+	result := analyze.Analyze(workflowRuns, analyze.Options{
+		ZombieHours:  *zombieHours,
+		ChangedPaths: splitPaths(*changed),
+	})
 
 	// The Markdown comment is built around cost, so asking for it implies -cost.
 	if *markdownOut {
@@ -80,6 +108,10 @@ func main() {
 			os.Exit(1)
 		}
 		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows)
+		if window > 0 {
+			result.Cost.RequestedWindowDays = window.Hours() / 24
+			result.Cost.WindowTruncated = !windowComplete
+		}
 	}
 
 	switch {
@@ -96,4 +128,56 @@ func main() {
 	default:
 		report.WriteTerminal(os.Stdout, *repo, result, *withCost)
 	}
+}
+
+// splitPaths turns a comma-separated flag value into a slice, dropping empties
+// so that a trailing comma or an unset shell variable does not become a path.
+func splitPaths(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseWindow accepts the units people actually type for a CI window -- 30d,
+// 2w, 48h -- as well as anything time.ParseDuration understands.
+//
+// Go's own parser stops at hours, so "30d" is a parse error there. Rejecting it
+// would be technically correct and useless.
+func parseWindow(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, fmt.Errorf("empty window")
+	}
+
+	unit := time.Duration(0)
+	switch v[len(v)-1] {
+	case 'd', 'D':
+		unit = 24 * time.Hour
+	case 'w', 'W':
+		unit = 7 * 24 * time.Hour
+	}
+
+	if unit != 0 {
+		n, err := strconv.ParseFloat(v[:len(v)-1], 64)
+		if err != nil {
+			return 0, fmt.Errorf("not a number before %q", v[len(v)-1:])
+		}
+		if n <= 0 {
+			return 0, fmt.Errorf("must be positive")
+		}
+		return time.Duration(n * float64(unit)), nil
+	}
+
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("use 30d, 2w, 48h or a Go duration")
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return d, nil
 }
