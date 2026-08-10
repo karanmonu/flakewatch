@@ -32,6 +32,7 @@ func main() {
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
 	concurrency := flag.Int("concurrency", 8, "parallel requests when fetching job data")
 	jsonOut := flag.Bool("json", false, "emit JSON instead of a terminal report")
+	markdownOut := flag.Bool("markdown", false, "emit a Markdown pull request comment")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -63,6 +64,11 @@ func main() {
 
 	result := analyze.Analyze(workflowRuns, analyze.Options{ZombieHours: *zombieHours})
 
+	// The Markdown comment is built around cost, so asking for it implies -cost.
+	if *markdownOut {
+		*withCost = true
+	}
+
 	if *withCost {
 		ids := make([]int64, 0, len(workflowRuns))
 		for _, r := range workflowRuns {
@@ -76,12 +82,18 @@ func main() {
 		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows)
 	}
 
-	if *jsonOut {
+	switch {
+	case *jsonOut:
 		if err := report.WriteJSON(os.Stdout, result); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing JSON: %v\n", err)
 			os.Exit(1)
 		}
-		return
+	case *markdownOut:
+		if err := report.WriteMarkdown(os.Stdout, *repo, result); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing Markdown: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		report.WriteTerminal(os.Stdout, *repo, result, *withCost)
 	}
-	report.WriteTerminal(os.Stdout, *repo, result, *withCost)
 }
