@@ -140,7 +140,7 @@ runs:
           exit 0
         fi
 
-        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \\
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
           --jq 'map(select(.body | startswith("<!-- flakewatch:report -->"))) | .[0].id // empty') || existing=""
 
         if [ -n "$existing" ]; then
