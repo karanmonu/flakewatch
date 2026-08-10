@@ -1,11 +1,13 @@
 # One-off: runs gofmt across the tree and commits the result.
 #
 # The repository was never gofmt-clean -- the CI check that revealed it was
-# added in the same pull request as this file. Removed once it has run.
+# added in the same pull request as this file. Both this file and the trigger
+# below are removed once it has run.
 name: Format
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [pr-scoped-window]
 
 permissions:
   contents: write
