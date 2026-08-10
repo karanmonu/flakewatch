@@ -32,8 +32,11 @@ changelog:
       - "^tests? for"
 
 release:
+  # The tag is created through the GitHub UI, which also creates the release.
+  # append lets goreleaser attach binaries to it instead of failing on a release
+  # that already exists.
+  mode: append
   footer: |
     Estimates use GitHub's published runner rates. Public repositories are not
     billed for standard hosted runners, so figures there are what the same runs
     would cost on a private repository.
-
