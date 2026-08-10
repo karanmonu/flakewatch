@@ -62,7 +62,7 @@ type CostSummary struct {
 	// for, which matters most for the monthly projection.
 	WindowTruncated bool `json:"window_truncated,omitempty"`
 	// RequestedWindowDays is the window -since asked for, zero when unused.
-RequestedWindowDays float64 `json:"requested_window_days,omitempty"`
+	RequestedWindowDays float64 `json:"requested_window_days,omitempty"`
 	// RunsForFullWindow estimates the -runs value that would have covered the
 	// requested window, from the run density actually observed. Zero unless the
 	// window was truncated.

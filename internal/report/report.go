@@ -183,6 +183,7 @@ func line(n int) string {
 	}
 	return string(b)
 }
+
 // writeRunReconciliation explains why two counts on the same page differ.
 //
 // Cost includes every run that had jobs. The flakiness table counts only runs

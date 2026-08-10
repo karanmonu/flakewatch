@@ -165,6 +165,7 @@ func TestSummarizeCostCarriesTheBudgetShortfall(t *testing.T) {
 		t.Errorf("RunsSkippedForBudget = %d, want 160", summary.RunsSkippedForBudget)
 	}
 }
+
 // CI load is weekly-periodic, so a window shorter than a full cycle cannot be
 // scaled to a month honestly. Surveying public repositories showed the old
 // 24-hour floor turning 1.8 weekdays of golangci-lint into "$143/month".
