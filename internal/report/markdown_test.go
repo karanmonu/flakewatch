@@ -94,3 +94,27 @@ func TestMarkdownHandlesNoCostData(t *testing.T) {
 	}
 }
 
+// A comment built from a truncated sample must say so. The alternative is a
+// confident-looking total that quietly covers a fraction of the window.
+func TestMarkdownDisclosesABudgetTruncatedSample(t *testing.T) {
+	r := sample()
+	r.Cost.RunsSkippedForBudget = 160
+
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "160 run(s) were not fetched") {
+		t.Error("a sample cut short to protect the rate limit must be disclosed in the comment")
+	}
+}
+
+func TestMarkdownStaysSilentWhenNothingWasSkipped(t *testing.T) {
+	var b strings.Builder
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "were not fetched") {
+		t.Error("caveats for things that did not happen are noise")
+	}
+}
