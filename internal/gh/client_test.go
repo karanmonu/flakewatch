@@ -299,3 +299,178 @@ func TestJobDurationMS(t *testing.T) {
 	}
 }
 
+// GitHub answers 403 for both "you are not allowed" and "you have asked too
+// often". Only X-RateLimit-Remaining separates them, and getting this wrong in
+// either direction is costly: treat a permission error as rate limiting and the
+// tool silently reports partial data; treat rate limiting as a permission error
+// and it aborts a run it could have completed.
+func TestForbiddenIsRateLimitedOnlyWhenBudgetIsExhausted(t *testing.T) {
+	tests := []struct {
+		name      string
+		remaining string
+		status    int
+		want      bool
+	}{
+		{"403 with budget spent", "0", http.StatusForbidden, true},
+		{"403 with budget left", "412", http.StatusForbidden, false},
+		{"403 with no header at all", "", http.StatusForbidden, false},
+		{"429", "0", http.StatusTooManyRequests, true},
+		{"404", "500", http.StatusNotFound, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.remaining != "" {
+					w.Header().Set("X-RateLimit-Remaining", tt.remaining)
+					w.Header().Set("X-RateLimit-Limit", "1000")
+				}
+				w.WriteHeader(tt.status)
+			}))
+
+			_, err := c.RunJobs("o/r", 1)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := RateLimited(err); got != tt.want {
+				t.Errorf("RateLimited(%v) = %v, want %v", err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitedRejectsOtherErrors(t *testing.T) {
+	if RateLimited(fmt.Errorf("connection refused")) {
+		t.Error("a plain error must not be reported as rate limiting")
+	}
+}
+
+func TestClientRecordsRateLimitHeaders(t *testing.T) {
+	reset := time.Now().Add(42 * time.Minute).Truncate(time.Second)
+
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "1000")
+		w.Header().Set("X-RateLimit-Remaining", "873")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		json.NewEncoder(w).Encode(runsPage{})
+	}))
+
+	if rl := c.RateLimit(); rl.Known {
+		t.Error("a fresh client must not claim to know the budget")
+	}
+	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	rl := c.RateLimit()
+	if !rl.Known {
+		t.Fatal("Known = false after a response carrying the headers")
+	}
+	if rl.Remaining != 873 || rl.Limit != 1000 {
+		t.Errorf("got %d/%d, want 873/1000", rl.Remaining, rl.Limit)
+	}
+	if !rl.Reset.Equal(reset) {
+		t.Errorf("Reset = %v, want %v", rl.Reset, reset)
+	}
+}
+
+// The budget belongs to the whole repository, not to us. Inside Actions the
+// GITHUB_TOKEN allows roughly 1,000 requests an hour shared with every other
+// workflow, so a large analysis must shrink itself rather than spend the lot.
+func TestRunAllJobsTrimsWorkToFitRemainingBudget(t *testing.T) {
+	const remaining = 140 // reservedBudget is 100, so 40 runs are affordable
+
+	var requests int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "1000")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		if r.URL.Path == "/repos/o/r/actions/runs" {
+			json.NewEncoder(w).Encode(runsPage{})
+			return
+		}
+		atomic.AddInt32(&requests, 1)
+		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+	}))
+
+	// One call so the client has seen the headers.
+	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := make([]int64, 200)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	res, err := c.RunAllJobs("o/r", ids, 4)
+	if err != nil {
+		t.Fatalf("running short of budget is not an error: %v", err)
+	}
+
+	const affordable = remaining - reservedBudget
+	if len(res.ByRun) != affordable {
+		t.Errorf("fetched %d runs, want %d", len(res.ByRun), affordable)
+	}
+	if res.SkippedForBudget != len(ids)-affordable {
+		t.Errorf("SkippedForBudget = %d, want %d", res.SkippedForBudget, len(ids)-affordable)
+	}
+	if requests > affordable {
+		t.Errorf("made %d job requests; the budget allowed %d", requests, affordable)
+	}
+}
+
+// Below the reserve, the right answer is to fetch nothing and say so, not to
+// spend the last requests someone else's deploy may need.
+func TestRunAllJobsFetchesNothingBelowTheReserve(t *testing.T) {
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "1000")
+		w.Header().Set("X-RateLimit-Remaining", "5")
+		json.NewEncoder(w).Encode(runsPage{})
+	}))
+	if _, err := c.ListWorkflowRuns("o/r", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := c.RunAllJobs("o/r", []int64{1, 2, 3}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ByRun) != 0 {
+		t.Errorf("fetched %d runs with the budget nearly gone", len(res.ByRun))
+	}
+	if res.SkippedForBudget != 3 {
+		t.Errorf("SkippedForBudget = %d, want 3", res.SkippedForBudget)
+	}
+}
+
+// Hitting the limit mid-flight is different from a 401: we have real data for
+// the runs already fetched. Returning it, labelled, beats throwing it away.
+func TestRunAllJobsReturnsPartialResultWhenRateLimitedMidway(t *testing.T) {
+	var served int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&served, 1) > 3 {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Limit", "1000")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+	}))
+
+	ids := make([]int64, 50)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	res, err := c.RunAllJobs("o/r", ids, 1)
+	if err != nil {
+		t.Fatalf("rate limiting must not fail the batch: %v", err)
+	}
+	if len(res.ByRun) == 0 {
+		t.Error("no results returned; the runs fetched before the limit should survive")
+	}
+	if len(res.ByRun) == len(ids) {
+		t.Error("every run was fetched; the client did not stop when told to")
+	}
+	if res.SkippedForBudget == 0 {
+		t.Error("a truncated batch must report how much it skipped")
+	}
+}
