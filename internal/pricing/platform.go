@@ -33,4 +33,3 @@ func PlatformOf(label string) Platform {
 	}
 	return UnknownPlatform
 }
-

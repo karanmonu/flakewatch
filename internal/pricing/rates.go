@@ -145,4 +145,3 @@ func CeilMinutes(ms int64) int64 {
 	const msPerMinute = 60_000
 	return (ms + msPerMinute - 1) / msPerMinute
 }
-

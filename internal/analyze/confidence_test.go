@@ -80,4 +80,3 @@ func TestConfidentScoresSortAboveThinOnes(t *testing.T) {
 		t.Errorf("expected the confidently-scored workflow first, got %q", result.Workflows[0].Name)
 	}
 }
-

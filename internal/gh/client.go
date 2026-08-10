@@ -14,15 +14,15 @@ import (
 
 // WorkflowRun is the subset of the GitHub Actions run object we analyze.
 type WorkflowRun struct {
-	ID           int64     `json:"id"`
-	Name         string    `json:"name"`
-	HeadBranch   string    `json:"head_branch"`
-	Status       string    `json:"status"`     // queued | in_progress | completed
-	Conclusion   string    `json:"conclusion"` // success | failure | cancelled | ...
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	HeadBranch string `json:"head_branch"`
+	Status     string `json:"status"`     // queued | in_progress | completed
+	Conclusion string `json:"conclusion"` // success | failure | cancelled | ...
 	// Path is the workflow file this run came from, e.g.
 	// ".github/workflows/ci.yml". Names collide and get renamed; the path is
 	// what a pull request diff actually gives you.
-	Path string `json:"path"`
+	Path         string    `json:"path"`
 	RunStartedAt time.Time `json:"run_started_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	HTMLURL      string    `json:"html_url"`

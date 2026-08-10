@@ -118,6 +118,7 @@ func TestMarkdownStaysSilentWhenNothingWasSkipped(t *testing.T) {
 		t.Error("caveats for things that did not happen are noise")
 	}
 }
+
 // The comment that opens with the whole repository's bill is a comment people
 // mute. Naming the workflow the pull request actually edits is the difference.
 func TestMarkdownLeadsWithTheTouchedWorkflow(t *testing.T) {

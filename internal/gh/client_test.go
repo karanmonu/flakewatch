@@ -474,6 +474,7 @@ func TestRunAllJobsReturnsPartialResultWhenRateLimitedMidway(t *testing.T) {
 		t.Error("a truncated batch must report how much it skipped")
 	}
 }
+
 // The window filter GitHub accepts is date-granular, so asking for "since
 // 36 hours ago" returns everything from that calendar day, including runs that
 // started before the window. Those have to be dropped here or the window is
