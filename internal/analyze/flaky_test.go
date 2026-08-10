@@ -137,3 +137,102 @@ func TestAnalyzeIgnoresPathsThatMatchNothing(t *testing.T) {
 		}
 	}
 }
+
+// Cost counts every run that burned minutes; flakiness counts only runs that
+// concluded success or failure. Reporting one number for both is what made the
+// two columns look like they disagreed (#10), so both are carried explicitly.
+func TestAnalyzeSeparatesRunsFromScoredRuns(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runs := []gh.WorkflowRun{
+		{Name: "CI", Status: "completed", Conclusion: "success", RunStartedAt: start},
+		{Name: "CI", Status: "completed", Conclusion: "failure", RunStartedAt: start.Add(time.Hour)},
+		{Name: "CI", Status: "completed", Conclusion: "cancelled", RunStartedAt: start.Add(2 * time.Hour)},
+		{Name: "CI", Status: "completed", Conclusion: "skipped", RunStartedAt: start.Add(3 * time.Hour)},
+	}
+
+	got := Analyze(runs, Options{})
+	if len(got.Workflows) != 1 {
+		t.Fatalf("got %d workflows, want 1", len(got.Workflows))
+	}
+	s := got.Workflows[0]
+
+	if s.Runs != 4 {
+		t.Errorf("Runs = %d, want 4 -- cancelled and skipped runs still cost money", s.Runs)
+	}
+	if s.Scored != 2 {
+		t.Errorf("Scored = %d, want 2 -- only success and failure say anything about flakiness", s.Scored)
+	}
+	if s.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5 (1 of 2 scored, not 1 of 4)", s.FailureRate)
+	}
+}
+
+// A workflow every one of whose runs was cancelled has real spend and no
+// score. It must not vanish from the report, and it must not divide by zero.
+func TestAnalyzeKeepsWorkflowsWithNoScoredRuns(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runs := []gh.WorkflowRun{
+		{Name: "Cancelled always", Status: "completed", Conclusion: "cancelled", RunStartedAt: start},
+		{Name: "Cancelled always", Status: "completed", Conclusion: "cancelled", RunStartedAt: start.Add(time.Hour)},
+	}
+
+	got := Analyze(runs, Options{})
+	if len(got.Workflows) != 1 {
+		t.Fatalf("got %d workflows, want the cancelled one to survive", len(got.Workflows))
+	}
+	s := got.Workflows[0]
+	if s.Runs != 2 || s.Scored != 0 {
+		t.Errorf("Runs = %d, Scored = %d; want 2 and 0", s.Runs, s.Scored)
+	}
+	if s.FailureRate != 0 || s.FlakinessScore != 0 {
+		t.Errorf("a workflow with nothing scored must not produce a rate or a score")
+	}
+	if s.ScoreConfident {
+		t.Error("nothing was scored, so no score can be confident")
+	}
+}
+
+// Two workflow files are two workflows even when they share a display name,
+// and one workflow file stays one workflow even when its name changes. Grouping
+// by name gets both of those wrong: it merges the first pair into a single row
+// whose cost is the sum of two unrelated files, and splits the second into two
+// rows each holding half its history.
+func TestAnalyzeGroupsByFileNotDisplayName(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("same name, different files", func(t *testing.T) {
+		runs := []gh.WorkflowRun{
+			{Name: "CI", Path: ".github/workflows/ci.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+			{Name: "CI", Path: ".github/workflows/ci-nightly.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+		}
+		got := Analyze(runs, Options{})
+		if len(got.Workflows) != 2 {
+			t.Fatalf("got %d workflows, want 2 -- two files are two workflows", len(got.Workflows))
+		}
+		paths := map[string]bool{}
+		for _, s := range got.Workflows {
+			paths[s.Path] = true
+		}
+		if !paths[".github/workflows/ci.yml"] || !paths[".github/workflows/ci-nightly.yml"] {
+			t.Errorf("both files should survive as separate rows, got %v", paths)
+		}
+	})
+
+	t.Run("same file, renamed", func(t *testing.T) {
+		runs := []gh.WorkflowRun{
+			{Name: "Old name", Path: ".github/workflows/ci.yml", Status: "completed", Conclusion: "success", RunStartedAt: start},
+			{Name: "New name", Path: ".github/workflows/ci.yml", Status: "completed", Conclusion: "failure", RunStartedAt: start.Add(time.Hour)},
+		}
+		got := Analyze(runs, Options{})
+		if len(got.Workflows) != 1 {
+			t.Fatalf("got %d workflows, want 1 -- a rename is not a new workflow", len(got.Workflows))
+		}
+		s := got.Workflows[0]
+		if s.Runs != 2 || s.Scored != 2 {
+			t.Errorf("Runs = %d, Scored = %d; the history should stay together", s.Runs, s.Scored)
+		}
+		if s.Name != "New name" {
+			t.Errorf("Name = %q, want the most recent name", s.Name)
+		}
+	})
+}

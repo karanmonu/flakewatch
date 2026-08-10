@@ -10,9 +10,9 @@ import (
 func sample() analyze.Result {
 	return analyze.Result{
 		Workflows: []analyze.WorkflowStats{
-			{Name: "E2E", Runs: 12, FailureRate: 0.08, FlakinessScore: 0.06, ScoreConfident: true, CostUSD: 9.68},
-			{Name: "Test", Runs: 10, FailureRate: 0.5, FlakinessScore: 0.33, ScoreConfident: true, CostUSD: 4.38},
-			{Name: "TC39", Runs: 3, FailureRate: 0, FlakinessScore: 0, ScoreConfident: false, CostUSD: 0.02},
+			{Name: "E2E", Runs: 12, Scored: 12, FailureRate: 0.08, FlakinessScore: 0.06, ScoreConfident: true, CostUSD: 9.68},
+			{Name: "Test", Runs: 10, Scored: 10, FailureRate: 0.5, FlakinessScore: 0.33, ScoreConfident: true, CostUSD: 4.38},
+			{Name: "TC39", Runs: 3, Scored: 3, FailureRate: 0, FlakinessScore: 0, ScoreConfident: false, CostUSD: 0.02},
 		},
 		Cost: analyze.CostSummary{
 			TotalUSD: 24.12, MonthlyUSD: 224.0, WindowDays: 3.2, RunsPriced: 200,
@@ -64,7 +64,7 @@ func TestMarkdownNamesTheTopSpenderWithItsShare(t *testing.T) {
 func TestMarkdownSuppressesUnreliableFlakinessScores(t *testing.T) {
 	var b strings.Builder
 	WriteMarkdown(&b, "o/r", sample())
-	if !strings.Contains(b.String(), "(3 runs)") {
+	if !strings.Contains(b.String(), "(3 scored)") {
 		t.Error("a workflow with too few runs should show its run count instead of a score")
 	}
 }

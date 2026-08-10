@@ -8,13 +8,15 @@ import (
 	"github.com/karanmonu/flakewatch/internal/pricing"
 )
 
-// RunCostUSD estimates what a workflow run's jobs cost at published rates.
+// RunCostUSD estimates what a workflow run's jobs cost.
 //
 // The arithmetic that matters: GitHub rounds each *job* up to the next whole
 // minute, so a run's cost is the sum over its jobs of ceil(job duration), not
 // the rounded total of the run. A run of ten 30-second jobs bills ten minutes,
 // not five, and the gap widens the wider a matrix fans out.
-func RunCostUSD(jobs []gh.Job) float64 {
+//
+// rates may be nil, in which case only GitHub's published rates apply.
+func RunCostUSD(jobs []gh.Job, rates pricing.Overrides) float64 {
 	var total float64
 	for _, j := range jobs {
 		if j.DurationMS() == 0 {
@@ -23,11 +25,12 @@ func RunCostUSD(jobs []gh.Job) float64 {
 			// estimate is missing.
 			continue
 		}
-		runner := pricing.Resolve(j.Labels)
+		runner := pricing.ResolveWith(j.Labels, rates)
 		if !runner.Known {
-			// Self-hosted, or a label we have no published rate for. Skipping
-			// is right in both cases: "not billed" and "we don't know" are both
-			// wrong to record as a positive number.
+			// Self-hosted with no user-supplied rate, or a label we have no
+			// published rate for. Skipping is right in both cases: "not billed
+			// by GitHub" and "we don't know" are both wrong to record as a
+			// positive number.
 			continue
 		}
 		total += float64(pricing.CeilMinutes(j.DurationMS())) * runner.USDPerMinute
@@ -67,6 +70,12 @@ type CostSummary struct {
 	// requested window, from the run density actually observed. Zero unless the
 	// window was truncated.
 	RunsForFullWindow int `json:"runs_for_full_window,omitempty"`
+	// UserPricedJobs counts jobs priced from a user-supplied rate file rather
+	// than GitHub's published table. Non-zero means part of TotalUSD rests on
+	// numbers the user provided, which the report says out loud.
+	UserPricedJobs int `json:"user_priced_jobs,omitempty"`
+	// UserSuppliedLabels lists the distinct labels priced from that file.
+	UserSuppliedLabels []string `json:"user_supplied_labels,omitempty"`
 	// UnknownLabels lists the distinct labels behind UnknownRunnerJobs.
 	//
 	// Naming them rather than only counting them means the tool reports its own
@@ -76,6 +85,12 @@ type CostSummary struct {
 	// Opportunities lists per-workflow spend on platforms dearer than Linux,
 	// with the Linux counterfactual priced. Observations, not recommendations.
 	Opportunities []Opportunity `json:"opportunities,omitempty"`
+	// Superseded lists per-workflow compute spent on pull request commits that
+	// had already been replaced -- what a concurrency group would have saved.
+	Superseded []Superseded `json:"superseded,omitempty"`
+	// StepCosts is the dearest individual steps across all workflows, which is
+	// the drill-down from "which workflow" to "which part of it".
+	StepCosts []StepCost `json:"step_costs,omitempty"`
 }
 
 // minWindowForExtrapolation is the shortest observed window we will scale to a
@@ -97,7 +112,7 @@ const minWindowForExtrapolation = 7 * 24 * time.Hour
 //
 // It fills in the CostUSD field of each workflow stat, replaces AvgDurationSec
 // with measured execution time, and returns the repository-level summary.
-func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats) CostSummary {
+func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowStats, rates pricing.Overrides) CostSummary {
 	costByWorkflow := make(map[string]float64, len(stats))
 
 	var (
@@ -105,9 +120,11 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		priced         int
 		selfHosted     int
 		unknownRunners int
+		userPriced     int
 		oldest, newest time.Time
 	)
 	unknownLabels := make(map[string]struct{})
+	userLabels := make(map[string]struct{})
 	execSecondsByWorkflow := make(map[string]float64, len(stats))
 	execRunsByWorkflow := make(map[string]int, len(stats))
 
@@ -116,8 +133,8 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		if !ok {
 			continue
 		}
-		cost := RunCostUSD(runJobs)
-		costByWorkflow[r.Name] += cost
+		cost := RunCostUSD(runJobs, rates)
+		costByWorkflow[workflowKey(r)] += cost
 		total += cost
 		priced++
 
@@ -138,15 +155,18 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 			}
 		}
 		if lastEnd.After(firstStart) {
-			execSecondsByWorkflow[r.Name] += lastEnd.Sub(firstStart).Seconds()
-			execRunsByWorkflow[r.Name]++
+			execSecondsByWorkflow[workflowKey(r)] += lastEnd.Sub(firstStart).Seconds()
+			execRunsByWorkflow[workflowKey(r)]++
 		}
 
 		for _, j := range runJobs {
 			if j.DurationMS() == 0 {
 				continue
 			}
-			switch runner := pricing.Resolve(j.Labels); {
+			switch runner := pricing.ResolveWith(j.Labels, rates); {
+			case runner.UserSupplied:
+				userPriced++
+				userLabels[runner.Label] = struct{}{}
 			case runner.SelfHosted:
 				selfHosted++
 			case !runner.Known:
@@ -170,10 +190,17 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 	}
 
 	for i := range stats {
-		stats[i].CostUSD = costByWorkflow[stats[i].Name]
+		// Analyze sets key; a caller building WorkflowStats by hand (the tests
+		// do) will not have. Falling back to the name is consistent, because
+		// runs with no path key on their name too.
+		k := stats[i].key
+		if k == "" {
+			k = stats[i].Name
+		}
+		stats[i].CostUSD = costByWorkflow[k]
 		// Prefer measured execution time over the run record's wall clock.
-		if n := execRunsByWorkflow[stats[i].Name]; n > 0 {
-			stats[i].AvgDurationSec = execSecondsByWorkflow[stats[i].Name] / float64(n)
+		if n := execRunsByWorkflow[k]; n > 0 {
+			stats[i].AvgDurationSec = execSecondsByWorkflow[k] / float64(n)
 		}
 	}
 
@@ -183,6 +210,12 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 	}
 	sort.Strings(labels) // map order is random; a stable report is diffable
 
+	pricedLabels := make([]string, 0, len(userLabels))
+	for l := range userLabels {
+		pricedLabels = append(pricedLabels, l)
+	}
+	sort.Strings(pricedLabels)
+
 	summary := CostSummary{
 		TotalUSD:             total,
 		RunsPriced:           priced,
@@ -191,6 +224,8 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 		SelfHostedJobs:       selfHosted,
 		UnknownRunnerJobs:    unknownRunners,
 		UnknownLabels:        labels,
+		UserPricedJobs:       userPriced,
+		UserSuppliedLabels:   pricedLabels,
 	}
 
 	var monthlyFactor float64
@@ -201,6 +236,11 @@ func SummarizeCost(runs []gh.WorkflowRun, jobs gh.JobsResult, stats []WorkflowSt
 			summary.MonthlyUSD = total * monthlyFactor
 		}
 	}
-	summary.Opportunities = findOpportunities(runs, jobs, monthlyFactor)
+	summary.Opportunities = findOpportunities(runs, jobs, monthlyFactor, rates)
+	// Note this can only under-report. The sample is the most recent N runs, so
+	// a run whose successor fell outside the window looks unsuperseded, and the
+	// newest run in every group correctly has no successor at all.
+	summary.Superseded = findSuperseded(runs, jobs, monthlyFactor, rates)
+	summary.StepCosts = findStepCosts(runs, jobs, monthlyFactor, rates)
 	return summary
 }

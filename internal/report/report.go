@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/karanmonu/flakewatch/internal/analyze"
 	"github.com/karanmonu/flakewatch/internal/pricing"
@@ -25,30 +26,37 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 
 	if showCost {
 		writeCostHeadline(w, r.Cost)
-		writeRunReconciliation(w, r)
 	}
 
 	if len(r.Workflows) == 0 {
 		fmt.Fprintln(w, "No completed workflow runs found.")
 	} else {
 		if showCost {
-			fmt.Fprintf(w, "%-28s %5s %6s %7s %7s %9s\n", "WORKFLOW", "RUNS", "FAIL%", "FLAKY", "AVG(s)", "COST")
+			fmt.Fprintf(w, "%-28s %5s %6s %6s %7s %7s %9s\n", "WORKFLOW", "RUNS", "SCORED", "FAIL%", "FLAKY", "AVG(s)", "COST")
 		} else {
-			fmt.Fprintf(w, "%-28s %5s %6s %7s %7s\n", "WORKFLOW", "RUNS", "FAIL%", "FLAKY", "AVG(s)")
+			fmt.Fprintf(w, "%-28s %5s %6s %6s %7s %7s\n", "WORKFLOW", "RUNS", "SCORED", "FAIL%", "FLAKY", "AVG(s)")
 		}
-		var thin int
+		var thin, touched int
 		for _, s := range r.Workflows {
 			score := fmt.Sprintf("%7.2f", s.FlakinessScore)
 			if !s.ScoreConfident {
 				score = fmt.Sprintf("%7s", "-")
 				thin++
 			}
-			fmt.Fprintf(w, "%-28s %5d %5.0f%% %s %7.0f",
-				truncate(s.Name, 28), s.Runs, s.FailureRate*100, score, s.AvgDurationSec)
+			name := truncate(s.Name, 26)
+			if s.Touched {
+				name += " *"
+				touched++
+			}
+			fmt.Fprintf(w, "%-28s %5d %6d %5.0f%% %s %7.0f",
+				name, s.Runs, s.Scored, s.FailureRate*100, score, s.AvgDurationSec)
 			if showCost {
 				fmt.Fprintf(w, " %9s", usd(s.CostUSD))
 			}
 			fmt.Fprintf(w, "  %s\n", badge(s))
+		}
+		if touched > 0 {
+			fmt.Fprintf(w, "\n* marks the %d workflow(s) named by -changed.\n", touched)
 		}
 		if thin > 0 {
 			fmt.Fprintf(w, "\n%d workflow(s) had fewer than %d runs in this window, so no flakiness\n"+
@@ -66,7 +74,10 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 
 	if showCost {
 		writeOpportunities(w, r.Cost.Opportunities)
+		writeSuperseded(w, r.Cost.Superseded)
+		writeStepCosts(w, r.Cost.StepCosts)
 		fmt.Fprintf(w, "\nRates: %s (retrieved %s)\n", pricing.RatesSource, pricing.RatesRetrieved)
+		writeRateStaleness(w, time.Now())
 	}
 	fmt.Fprintln(w)
 }
@@ -90,6 +101,10 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 	fmt.Fprintln(w, "This is what the runs would cost at published rates. Public repositories")
 	fmt.Fprintln(w, "are not billed for standard GitHub-hosted runners.")
 
+	if c.UserPricedJobs > 0 {
+		fmt.Fprintf(w, "%d job(s) were priced from your -rates file, not GitHub's table: %s\n",
+			c.UserPricedJobs, strings.Join(c.UserSuppliedLabels, ", "))
+	}
 	if c.SelfHostedJobs > 0 {
 		fmt.Fprintf(w, "%d job(s) ran on self-hosted runners and are excluded (not currently billed).\n", c.SelfHostedJobs)
 	}
@@ -97,6 +112,7 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 		fmt.Fprintf(w, "%d job(s) used a runner label with no published rate and are excluded,\n"+
 			"so this is an undercount. Labels: %s\n",
 			c.UnknownRunnerJobs, strings.Join(c.UnknownLabels, ", "))
+		writeRatesHint(w, c.UnknownLabels)
 	}
 	if c.RunsMissingJobs > 0 {
 		fmt.Fprintf(w, "%d of %d runs had no job data (aged out) and are excluded.\n",
@@ -157,7 +173,7 @@ func usd(v float64) string {
 
 func badge(s analyze.WorkflowStats) string {
 	if !s.ScoreConfident {
-		return fmt.Sprintf("only %d run(s)", s.Runs)
+		return fmt.Sprintf("only %d scored", s.Scored)
 	}
 	switch {
 	case s.FlakinessScore >= 0.5:
@@ -184,25 +200,118 @@ func line(n int) string {
 	return string(b)
 }
 
-// writeRunReconciliation explains why two counts on the same page differ.
+// writeRateStaleness warns when the built-in price list is old enough that it
+// may no longer match GitHub's.
 //
-// Cost includes every run that had jobs. The flakiness table counts only runs
-// that concluded success or failure, because a cancelled run says nothing about
-// whether a workflow is flaky. Both are right; printing them next to each other
-// without a word of explanation is not, and an unexplained discrepancy is how a
-// reader decides to distrust every other number here.
-func writeRunReconciliation(w io.Writer, r analyze.Result) {
-	if r.Cost.RunsPriced == 0 {
+// The rates are hardcoded data carrying a retrieval date, which is honest but
+// passive: nobody reads a date and does the subtraction. A stale table produces
+// a confident wrong number, which is the failure this tool exists to avoid, so
+// it does the subtraction itself.
+func writeRateStaleness(w io.Writer, now time.Time) {
+	if !pricing.RatesStale(now) {
 		return
 	}
-	var scored int
-	for _, s := range r.Workflows {
-		scored += s.Runs
-	}
-	if scored == r.Cost.RunsPriced {
-		return
-	}
-	fmt.Fprintf(w, "%d runs priced. %d of them concluded success or failure and are scored\n"+
-		"below; the other %d were cancelled or skipped, which costs money but says\n"+
-		"nothing about flakiness.\n\n", r.Cost.RunsPriced, scored, r.Cost.RunsPriced-scored)
+	months := int(pricing.RatesAge(now).Hours() / 24 / 30)
+	fmt.Fprintf(w, "Those rates were last checked %d months ago and may have moved since.\n"+
+		"Treat the totals as indicative and check the source above.\n", months)
 }
+
+// writeStepCosts lists the dearest individual steps.
+//
+// The share caveat is printed every time rather than tucked into a footnote,
+// because the number invites exactly the wrong reading: it looks like a charge
+// and it is a slice of one. Someone who adds these up and compares the total to
+// the workflow figure should find the explanation on the same screen.
+func writeStepCosts(w io.Writer, steps []analyze.StepCost) {
+	if len(steps) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nWhere the time goes, by step:\n")
+	fmt.Fprintf(w, "%-24s %-30s %7s %9s %10s\n", "WORKFLOW", "STEP", "RAN", "MINUTES", "SHARE")
+	for _, s := range steps {
+		fmt.Fprintf(w, "%-24s %-30s %7d %9.0f %10s\n",
+			truncate(s.Workflow, 24), truncate(s.Step, 30), s.Executions, s.Seconds/60, usd(s.USD))
+	}
+	fmt.Fprintln(w, "\nGitHub bills the job, not the step, so these are each step's share of its")
+	fmt.Fprintln(w, "job's cost and they sum to slightly less than the workflow totals above --")
+	fmt.Fprintln(w, "the difference is the per-job rounding. Matrix legs are counted separately,")
+	fmt.Fprintln(w, "so RAN is higher than the run count wherever a job fans out.")
+}
+
+// writeSuperseded lists compute spent on pull request commits that had already
+// been replaced.
+//
+// This is the one table in the report that ends with something to do. Every
+// other number here is deliberately phrased as an observation, because the tool
+// cannot see whether a workflow needs macOS or whether a slow test is slow for
+// a reason. It can see that a run finished for a commit that no longer existed,
+// and there is no version of that which is working as intended.
+func writeSuperseded(w io.Writer, sup []analyze.Superseded) {
+	if len(sup) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nRuns that kept going after a newer commit replaced them:\n")
+	fmt.Fprintf(w, "%-28s %5s %9s %11s  %s\n", "WORKFLOW", "RUNS", "MINUTES", "COST", "PER MONTH")
+	for _, o := range sup {
+		monthly := "-"
+		if o.MonthlyUSD > 0 {
+			monthly = "~" + usd(o.MonthlyUSD) + "/mo"
+		}
+		fmt.Fprintf(w, "%-28s %5d %9d %11s  %s\n",
+			truncate(o.Workflow, 28), o.Runs, o.WastedMinutes, usd(o.WastedUSD), monthly)
+	}
+
+	fmt.Fprintln(w, "\nPull request runs only. Counted from the moment the newer run started,")
+	fmt.Fprintln(w, "not the whole run -- the minutes before that were buying a result someone")
+	fmt.Fprintln(w, "still wanted. Adding this to the workflow stops it:")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "  concurrency:")
+	fmt.Fprintln(w, "    group: ${{ github.workflow }}-${{ github.ref }}")
+	fmt.Fprintln(w, "    cancel-in-progress: true")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "cancel-in-progress is the load-bearing line. Without it the group queues")
+	fmt.Fprintln(w, "the newer run behind the older one instead of replacing it.")
+	if sup[0].ExampleURL != "" {
+		fmt.Fprintf(w, "Example: %s\n", sup[0].ExampleURL)
+	}
+}
+
+// writeRatesHint turns the undercount warning into something the reader can act
+// on, with their own labels already filled in.
+//
+// Naming the gap was the old behaviour and it was only half the job: a reader
+// who learns their biggest runner is unpriced still has to go and find out that
+// a rate file exists, what shape it is, and which flag takes it. Printing the
+// file they need removes all three steps, and the labels are already known
+// because the same code just counted them.
+func writeRatesHint(w io.Writer, labels []string) {
+	printable := make([]string, 0, len(labels))
+	for _, l := range labels {
+		// A job that reported no labels has nothing to key a rate off. Offering
+		// the reader a line they cannot use would be worse than leaving it out.
+		if l != noLabelsReported {
+			printable = append(printable, l)
+		}
+	}
+	if len(printable) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w, "To include them, put your own per-minute rates in a file:")
+	fmt.Fprintln(w, "  {")
+	for i, l := range printable {
+		comma := ","
+		if i == len(printable)-1 {
+			comma = ""
+		}
+		fmt.Fprintf(w, "    %q: 0.000%s\n", l, comma)
+	}
+	fmt.Fprintln(w, "  }")
+	fmt.Fprintln(w, "and pass it with -rates. Self-hosted runners work the same way.")
+}
+
+// noLabelsReported mirrors the placeholder analyze uses for a job that reported
+// no runner labels at all.
+const noLabelsReported = "(no labels reported)"

@@ -4,23 +4,28 @@
 //
 // Usage:
 //
-//	flakewatch -repo owner/name [-runs 200] [-since 30d] [-zombie-hours 6] [-cost]
+//	flakewatch -repo owner/name [-runs 200] [-since 30d] [-zombie-hours 6] [-cost] [-rates rates.json]
 //
 // Authentication uses the GITHUB_TOKEN environment variable (a classic PAT or
 // fine-grained token with actions:read is sufficient).
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/karanmonu/flakewatch/internal/analyze"
 	"github.com/karanmonu/flakewatch/internal/gh"
+	"github.com/karanmonu/flakewatch/internal/pricing"
 	"github.com/karanmonu/flakewatch/internal/report"
 )
 
@@ -36,6 +41,7 @@ func main() {
 	changed := flag.String("changed", "", "comma-separated workflow paths the caller changed, e.g. .github/workflows/ci.yml (marked in -markdown output)")
 	zombieHours := flag.Float64("zombie-hours", 6, "runs in progress longer than this are flagged as zombies")
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
+	ratesFile := flag.String("rates", "", "JSON file of runner label to USD per minute, for self-hosted and unrecognised labels")
 	concurrency := flag.Int("concurrency", 8, "parallel requests when fetching job data")
 	jsonOut := flag.Bool("json", false, "emit JSON instead of a terminal report")
 	markdownOut := flag.Bool("markdown", false, "emit a Markdown pull request comment")
@@ -51,6 +57,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: -repo is required (e.g. -repo grafana/k6)")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	// Load the rate file before spending any API budget. A typo in it should
+	// cost the user a second, not two hundred requests and then an error.
+	var rates pricing.Overrides
+	if *ratesFile != "" {
+		var err error
+		rates, err = pricing.LoadOverrides(*ratesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(2)
+		}
+		if !*withCost {
+			fmt.Fprintln(os.Stderr, "warning: -rates has no effect without -cost")
+		}
 	}
 
 	token := os.Getenv("GITHUB_TOKEN")
@@ -71,6 +92,12 @@ func main() {
 		}
 	}
 
+	// A run of -runs 800 is 800 sequential-ish HTTP requests. Ctrl-C should stop
+	// it now, not after the in-flight ones drain, so the signal cancels the same
+	// context every request is built from.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	client := gh.NewClient(token)
 
 	var (
@@ -79,13 +106,13 @@ func main() {
 		err            error
 	)
 	if window > 0 {
-		workflowRuns, windowComplete, err = client.ListWorkflowRunsSince(*repo, time.Now().Add(-window), *runs)
+		workflowRuns, windowComplete, err = client.ListWorkflowRunsSince(ctx, *repo, time.Now().Add(-window), *runs)
 	} else {
-		workflowRuns, err = client.ListWorkflowRuns(*repo, *runs)
+		workflowRuns, err = client.ListWorkflowRuns(ctx, *repo, *runs)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching workflow runs: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 
 	result := analyze.Analyze(workflowRuns, analyze.Options{
@@ -103,12 +130,12 @@ func main() {
 		for _, r := range workflowRuns {
 			ids = append(ids, r.ID)
 		}
-		jobs, err := client.RunAllJobs(*repo, ids, *concurrency)
+		jobs, err := client.RunAllJobs(ctx, *repo, ids, *concurrency)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching job data: %v\n", err)
-			os.Exit(1)
+			os.Exit(exitCode(err))
 		}
-		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows)
+		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows, rates)
 		if window > 0 {
 			result.Cost.RequestedWindowDays = window.Hours() / 24
 			result.Cost.WindowTruncated = !windowComplete
@@ -186,4 +213,16 @@ func parseWindow(v string) (time.Duration, error) {
 		return 0, fmt.Errorf("must be positive")
 	}
 	return d, nil
+}
+
+// exitCode distinguishes "you interrupted this" from "this went wrong".
+//
+// 130 is the conventional shell code for a process ended by SIGINT. A script
+// wrapping flakewatch can then tell a deliberate Ctrl-C apart from a genuine
+// failure, which matters if it is deciding whether to retry.
+func exitCode(err error) int {
+	if errors.Is(err, context.Canceled) {
+		return 130
+	}
+	return 1
 }
