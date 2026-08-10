@@ -101,6 +101,10 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 		fmt.Fprintf(w, "%d of %d runs had no job data (aged out) and are excluded.\n",
 			c.RunsMissingJobs, c.RunsPriced+c.RunsMissingJobs)
 	}
+	if c.RunsSkippedForBudget > 0 {
+		fmt.Fprintf(w, "%d run(s) were not fetched to protect the shared API rate limit,\n"+
+			"so this covers a smaller sample than requested. Lower -runs to avoid it.\n", c.RunsSkippedForBudget)
+	}
 	fmt.Fprintln(w)
 }
 

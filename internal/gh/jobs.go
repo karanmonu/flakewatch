@@ -67,6 +67,9 @@ type JobsResult struct {
 	// Missing counts runs whose jobs returned 404, normally because they have
 	// aged out. Excluded from totals rather than counted as zero.
 	Missing int
+	// SkippedForBudget counts runs deliberately not fetched because doing so
+	// would have consumed more of the API budget than we are willing to take.
+	SkippedForBudget int
 }
 
 // defaultJobsConcurrency is deliberately modest. Jobs cost one request per run,
@@ -75,14 +78,33 @@ type JobsResult struct {
 // limits on concurrent requests.
 const defaultJobsConcurrency = 8
 
-// RunAllJobs fetches jobs for many runs concurrently.
+// reservedBudget is the number of requests we refuse to spend, leaving room for
+// whatever else is running in the same repository. Inside GitHub Actions the
+// GITHUB_TOKEN budget is shared across every workflow, so a reporting tool that
+// drains it can break someone's deploy. A report is never worth that.
+const reservedBudget = 100
+
+// RunAllJobs fetches jobs for many runs concurrently, within budget.
 //
-// A 404 is counted in Missing and skipped. Any other error aborts, because a
-// 401 or a rate-limit response would otherwise silently produce a cost estimate
-// that is far too low.
+// A 404 is counted in Missing and skipped. Rate limiting stops further work
+// rather than hammering. Any other error aborts, because a 401 would otherwise
+// silently produce a cost estimate built from a fraction of the data.
 func (c *Client) RunAllJobs(repo string, runIDs []int64, concurrency int) (JobsResult, error) {
 	if concurrency <= 0 {
 		concurrency = defaultJobsConcurrency
+	}
+
+	// Trim the work to what the remaining budget can afford before starting.
+	skipped := 0
+	if rl := c.RateLimit(); rl.Known {
+		affordable := rl.Remaining - reservedBudget
+		if affordable < 0 {
+			affordable = 0
+		}
+		if affordable < len(runIDs) {
+			skipped = len(runIDs) - affordable
+			runIDs = runIDs[:affordable]
+		}
 	}
 
 	var (
@@ -90,6 +112,7 @@ func (c *Client) RunAllJobs(repo string, runIDs []int64, concurrency int) (JobsR
 		byRun   = make(map[int64][]Job, len(runIDs))
 		missing int
 		firstEr error
+		stopped bool
 	)
 
 	sem := make(chan struct{}, concurrency)
@@ -97,10 +120,11 @@ func (c *Client) RunAllJobs(repo string, runIDs []int64, concurrency int) (JobsR
 
 	for _, id := range runIDs {
 		mu.Lock()
-		stop := firstEr != nil
+		halt := firstEr != nil || stopped
 		mu.Unlock()
-		if stop {
-			break
+		if halt {
+			skipped++
+			continue
 		}
 
 		wg.Add(1)
@@ -118,6 +142,10 @@ func (c *Client) RunAllJobs(repo string, runIDs []int64, concurrency int) (JobsR
 				byRun[runID] = jobs
 			case NotFound(err):
 				missing++
+			case RateLimited(err):
+				// Stop asking. Report what we have rather than failing outright:
+				// a partial answer, clearly labelled, beats no answer.
+				stopped = true
 			case firstEr == nil:
 				firstEr = err
 			}
@@ -128,6 +156,5 @@ func (c *Client) RunAllJobs(repo string, runIDs []int64, concurrency int) (JobsR
 	if firstEr != nil {
 		return JobsResult{}, firstEr
 	}
-	return JobsResult{ByRun: byRun, Missing: missing}, nil
+	return JobsResult{ByRun: byRun, Missing: missing, SkippedForBudget: skipped}, nil
 }
-
