@@ -89,8 +89,13 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 			break
 		}
 		flaky := fmt.Sprintf("%.2f", s.FlakinessScore)
-		if !s.ScoreConfident {
+		switch {
+		case !s.ScoreConfident:
 			flaky = fmt.Sprintf("– _(%d scored)_", s.Scored)
+		case s.FailureRate >= alwaysFailingThreshold:
+			// Consistently broken scores zero for flakiness, which is correct
+			// and reads as a clean bill of health unless it is labelled.
+			flaky = fmt.Sprintf("%.2f ⛔ **always failing**", s.FlakinessScore)
 		}
 		name := fmt.Sprintf("`%s`", s.Name)
 		if s.Touched {

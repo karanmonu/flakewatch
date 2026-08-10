@@ -32,10 +32,23 @@ inputs:
       Set to an empty string to go back to a plain run count.
     required: false
     default: 30d
+  cache-dir:
+    description: >-
+      Directory to keep run history in, so a window can outlive one run.
+      A runner is fresh every time, so without a restored cache the Action
+      re-pays for the same history on every pull request and sees only what
+      the runs input reaches in one go -- a few hours on a busy repository.
+      This matters more here than anywhere else: the automatic GITHUB_TOKEN
+      allows roughly 1,000 requests an hour for the whole repository, so a
+      month of history is not merely expensive inside Actions, it is
+      unreachable. Point this at a path you restore with actions/cache.
+      Empty disables it.
+    required: false
+    default: ""
   version:
     description: flakewatch release to use.
     required: false
-    default: v0.5.0
+    default: v0.6.0
   always-comment:
     description: >-
       Comment on every pull request rather than only those touching
@@ -119,11 +132,19 @@ runs:
         RUNS: ${{ inputs.runs }}
         SINCE: ${{ inputs.since }}
         CHANGED: ${{ steps.changed.outputs.files }}
+        CACHE_DIR: ${{ inputs.cache-dir }}
         REPO: ${{ github.repository }}
       run: |
         set +e  # see the note above; -e is on before this script starts
         set -uo pipefail
-        if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -since "$SINCE" -changed "$CHANGED" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
+        # Built as an array so an unset cache-dir passes no flag at all rather
+        # than an empty one, which the CLI would read as "cache in the current
+        # directory" and silently litter the workspace.
+        CACHE_ARGS=()
+        if [ -n "$CACHE_DIR" ]; then
+          CACHE_ARGS=(-cache-dir "$CACHE_DIR")
+        fi
+        if ! /tmp/flakewatch -repo "$REPO" -runs "$RUNS" -since "$SINCE" -changed "$CHANGED" "${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"}" -markdown > /tmp/flakewatch-comment.md 2> /tmp/flakewatch-err.txt; then
           echo "::warning::flakewatch could not analyze $REPO: $(head -c 400 /tmp/flakewatch-err.txt)"
           echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
         fi

@@ -25,27 +25,26 @@ flakewatch -repo gohugoio/hugo -runs 200 -since 30d -cost
 flakewatch report — gohugoio/hugo
 ------------------------------------------------------------------------
 
-Estimated spend: $18.38 over 3.3 days  (window too short to project a month)
+Estimated spend: $69.75 over 13.5 days  (~$155/month at this rate)
 This is what the runs would cost at published rates. Public repositories
 are not billed for standard GitHub-hosted runners.
-Asked for 30 days but hit the run cap first, so this covers 3.3 days.
-About -runs 455 would cover the full window, at one request per run.
+Asked for 30 days but hit the run cap first, so this covers 13.5 days.
+About -runs 445 would cover the full window, at one request per run.
 
-50 runs priced. 36 of them concluded success or failure and are scored
-below; the other 14 were cancelled or skipped, which costs money but says
-nothing about flakiness.
-
-WORKFLOW                      RUNS  FAIL%   FLAKY  AVG(s)      COST
-Test                            18    11%    0.09    3822    $17.07  🟢 stable
-Continuous Integration           7     0%    0.00     146     $0.79  🟢 stable
-Update Docs Helpers              2     0%       -     172     $0.31  only 2 run(s)
+WORKFLOW                      RUNS SCORED  FAIL%   FLAKY  AVG(s)      COST
+Test                            82     77    29%    0.24    3458    $65.97  🟡 unstable
+Build Docker image              64     59     2%    0.00     417     $2.64  🟢 stable
+Push on master                  20     20     0%    0.00     164     $0.73  🟢 stable
+Close stale and lock clos…      13     13   100%    0.00       4     $0.08  ⛔ always failing
 
 Spend on platforms dearer than Linux:
 WORKFLOW                     PLATFORM  JOBS      COST    ON LINUX  DIFFERENCE
-Test                         windows     18    $10.67       $6.40       $4.27
+Test                         windows     77    $39.56      $23.74  $15.82 (~$35.21/mo)
 ```
 
-`Test` is 93% of that bill, and $10.67 of it is Windows legs that would cost $6.40 on Linux. Neither fact is available anywhere in the GitHub UI.
+`Test` is **94.6% of the entire bill**, and $39.56 of it is Windows legs that would cost $23.74 on Linux. Neither fact is available anywhere in the GitHub UI.
+
+`RUNS` and `SCORED` differ because cancelled runs cost money but say nothing about flakiness. And a workflow failing every single time scores zero for flakiness — consistently broken is not flaky — so it gets its own marker rather than a green dot.
 
 ## What it says about repositories you know
 
@@ -102,7 +101,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed to see which files the PR changed
-      - uses: karanmonu/flakewatch@v0.5.0
+      - uses: karanmonu/flakewatch@v0.6.0
 ```
 
 It stays quiet by default: no workflow files changed, no comment. The comment is scoped to the workflows *that* pull request edits, and it edits its own comment rather than adding a new one on every push.
@@ -111,8 +110,30 @@ It stays quiet by default: no workflow files changed, no comment. The comment is
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
 | `runs` | `50` | Recent runs to analyze. One API request each |
-| `version` | `v0.5.0` | Release to download |
+| `version` | `v0.6.0` | Release to download |
+| `cache-dir` | _(none)_ | Keep run history here, so a window outlives one run |
 | `always-comment` | `false` | Comment on every PR, not just workflow changes |
+
+**Give it a cache, or it stays near-sighted.** A runner is fresh every time, so
+without one the Action re-pays for the same history on every pull request and
+sees only what `runs` reaches in one go — a few hours on a busy repository:
+
+```yaml
+      - uses: actions/cache@v4
+        with:
+          path: .fwcache
+          key: flakewatch-${{ github.run_id }}
+          restore-keys: flakewatch-
+      - uses: karanmonu/flakewatch@v0.6.0
+        with:
+          cache-dir: .fwcache
+```
+
+This matters more here than anywhere else. The automatic `GITHUB_TOKEN` allows
+roughly 1,000 requests an hour for the entire repository, shared with every
+other workflow, and covering 30 days of an active repo needs several hundred —
+so without stored history a month is not merely expensive inside Actions, it is
+unreachable.
 
 Two properties it holds to, because a reporting tool that breaks your pipeline is worse than no reporting tool:
 
@@ -123,11 +144,19 @@ Two properties it holds to, because a reporting tool that breaks your pipeline i
 
 Someone pushes to a pull request branch, CI starts, they push again two minutes later. Without a concurrency group the first run carries on to the end, and every minute after that second push buys a result for a commit nobody will look at.
 
+Real output, `gohugoio/hugo`, a 13.5-day window:
+
 ```
 Runs that kept going after a newer commit replaced them:
 WORKFLOW                      RUNS   MINUTES        COST  PER MONTH
-CI                              14        86       $0.52  ~$4.83/mo
+Test                             7       448       $3.47  ~$7.72/mo
+Build Docker image               2         5       $0.03  ~$0.07/mo
+Example: https://github.com/gohugoio/hugo/actions/runs/30707211143
 ```
+
+Seven runs, **448 billable minutes**, on commits that no longer existed — 5% of
+hugo's bill, on a project that plainly knows what it is doing. The example link
+is there so you can check the claim rather than take it.
 
 Counted from the moment the newer run started, not the whole run — the minutes before that were buying a result someone still wanted. Reporting the whole run would be the larger, more impressive number and it would be wrong.
 
@@ -150,16 +179,63 @@ concurrency:
 ```
 Where the time goes, by step:
 WORKFLOW                 STEP                               RAN   MINUTES      SHARE
-Test                     Test                               216      1841     $11.05
-Test                     Set up job                         216        58      $0.35
-Test                     Install dependencies               216        44      $0.26
+Test                     Test                                78      3237     $32.37
+Test                     Check                               72      2794     $16.76
+Test                     Run staticcheck                     76      1203      $7.22
+Test                     Post Install Go                     86       363      $3.59
+Build Docker image       Build and push                      59       389      $2.34
+Test                     Free Disk Space (Ubuntu)            78       177      $1.06
 ```
+
+`Post Install Go` is the interesting row: $3.59 of teardown and cache upload
+that no one would have gone looking for, sitting in plain sight once the
+question is asked one level down.
 
 The jobs endpoint already returns every step with its timestamps, in the same response the cost arithmetic was reading anyway, so this costs no extra API requests. Matrix legs count separately — a four-second step fanned out twelve ways is not a four-second step, and `RAN` is what shows you that.
 
 Read the money as a **share, not a charge**. GitHub bills the job, rounded up to the whole minute; a step is a slice of that. The steps sum to slightly less than the workflow totals, and the difference is the rounding.
 
 Step timestamps have no sub-second component, so anything that finishes inside a second reports as zero and is left out.
+
+## It remembers what it already paid for
+
+Job data costs one API request per run. Against `gohugoio/hugo`, `-runs 200`
+bought 13.5 days of history and reaching 30 days needed 445 requests — and
+inside GitHub Actions the automatic token allows roughly 1,000 requests an hour
+for the entire repository, shared with every other workflow. A month of history
+was not expensive there so much as unreachable.
+
+So flakewatch keeps what it fetches:
+
+```bash
+flakewatch -repo owner/name -since 30d -cost     # day one: 13 days, 200 requests
+flakewatch -repo owner/name -since 30d -cost     # day two: 14 days, ~15 requests
+```
+
+A completed run never changes — its jobs are finished, their durations fixed,
+the runner labels they billed against settled — so history fetched once stays
+correct, and the window grows for the price of each day's new runs. Only
+completed runs are stored, for the same reason.
+
+The report says how much came from history rather than from this run's API
+calls:
+
+```
+190 of 200 run(s) were priced from local history instead of being
+re-fetched. Pass -no-cache to measure everything from the API again.
+34 of those predate this run's sample, so the window is wider than
+one invocation could have reached.
+```
+
+Two separate numbers on purpose. Repeating the same command avoids requests
+without widening anything; only elapsed calendar days widen the window. A report
+built almost entirely from a file on disk should not read like one fetched
+fresh.
+
+`-no-cache` turns it off, `-cache-dir` moves it. Without `-since` history is
+used to avoid re-fetching but not to widen the sample: quietly reporting on 900
+runs when you asked for 200 would be a different measurement than the one you
+requested.
 
 ## Runners the rate table has never heard of
 

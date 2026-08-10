@@ -114,6 +114,15 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 			c.UnknownRunnerJobs, strings.Join(c.UnknownLabels, ", "))
 		writeRatesHint(w, c.UnknownLabels)
 	}
+	if c.RunsFromCache > 0 {
+		fmt.Fprintf(w, "%d of %d run(s) were priced from local history instead of being\n"+
+			"re-fetched. Pass -no-cache to measure everything from the API again.\n",
+			c.RunsFromCache, c.RunsPriced)
+	}
+	if c.RunsFromHistory > 0 {
+		fmt.Fprintf(w, "%d of those predate this run's sample, so the window is wider than\n"+
+			"one invocation could have reached.\n", c.RunsFromHistory)
+	}
 	if c.RunsMissingJobs > 0 {
 		fmt.Fprintf(w, "%d of %d runs had no job data (aged out) and are excluded.\n",
 			c.RunsMissingJobs, c.RunsPriced+c.RunsMissingJobs)
@@ -171,11 +180,28 @@ func usd(v float64) string {
 	}
 }
 
+// alwaysFailingThreshold is the failure rate above which a workflow is called
+// broken rather than scored for flakiness.
+//
+// Not 1.0. A workflow that fails 19 times out of 20 has the same problem as one
+// that fails 20 out of 20, and the reader does not care about the distinction.
+const alwaysFailingThreshold = 0.9
+
+// badge summarises a workflow's health in one glyph.
+//
+// The flakiness score is deliberately zero for a workflow that always fails --
+// consistently broken is not flaky, and 4p(1-p) is built to say so. But zero
+// score fell through to "stable", which meant a workflow failing 100% of the
+// time was reported with a green dot and the word stable. Arithmetically
+// defensible, and completely wrong to a human reading the line. "Not flaky" and
+// "fine" are different claims and the output has to keep them apart.
 func badge(s analyze.WorkflowStats) string {
 	if !s.ScoreConfident {
 		return fmt.Sprintf("only %d scored", s.Scored)
 	}
 	switch {
+	case s.FailureRate >= alwaysFailingThreshold:
+		return "⛔ always failing"
 	case s.FlakinessScore >= 0.5:
 		return "🔴 flaky"
 	case s.FlakinessScore >= 0.2:
@@ -233,7 +259,9 @@ func writeStepCosts(w io.Writer, steps []analyze.StepCost) {
 		fmt.Fprintf(w, "%-24s %-30s %7d %9.0f %10s\n",
 			truncate(s.Workflow, 24), truncate(s.Step, 30), s.Executions, s.Seconds/60, usd(s.USD))
 	}
-	fmt.Fprintln(w, "\nGitHub bills the job, not the step, so these are each step's share of its")
+	fmt.Fprintln(w, "\nRAN counts every execution; a step that finishes inside a second measures")
+	fmt.Fprintln(w, "as zero minutes because step timestamps have no sub-second component.")
+	fmt.Fprintln(w, "GitHub bills the job, not the step, so these are each step's share of its")
 	fmt.Fprintln(w, "job's cost and they sum to slightly less than the workflow totals above --")
 	fmt.Fprintln(w, "the difference is the per-job rounding. Matrix legs are counted separately,")
 	fmt.Fprintln(w, "so RAN is higher than the run count wherever a job fans out.")
