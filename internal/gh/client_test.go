@@ -474,3 +474,83 @@ func TestRunAllJobsReturnsPartialResultWhenRateLimitedMidway(t *testing.T) {
 		t.Error("a truncated batch must report how much it skipped")
 	}
 }
+// The window filter GitHub accepts is date-granular, so asking for "since
+// 36 hours ago" returns everything from that calendar day, including runs that
+// started before the window. Those have to be dropped here or the window is
+// silently wider than requested -- which is the whole thing -since exists to fix.
+func TestListWorkflowRunsSinceTrimsTheDateGranularEdge(t *testing.T) {
+	now := time.Now().UTC()
+	since := now.Add(-36 * time.Hour)
+
+	inside := WorkflowRun{ID: 1, RunStartedAt: now.Add(-time.Hour)}
+	edge := WorkflowRun{ID: 2, RunStartedAt: since.Add(-2 * time.Hour)} // same day, older
+	var gotCreated string
+
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCreated = r.URL.Query().Get("created")
+		json.NewEncoder(w).Encode(runsPage{TotalCount: 2, WorkflowRuns: []WorkflowRun{inside, edge}})
+	}))
+
+	runs, complete, err := c.ListWorkflowRunsSince("o/r", since, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ">=" + since.Format("2006-01-02"); gotCreated != want {
+		t.Errorf("created = %q, want %q", gotCreated, want)
+	}
+	if len(runs) != 1 || runs[0].ID != 1 {
+		t.Errorf("got %d runs %v, want only the one inside the window", len(runs), runs)
+	}
+	if !complete {
+		t.Error("reaching a run older than the window means the window was covered")
+	}
+}
+
+// Hitting the run cap before reaching the start of the window is not an error,
+// but the caller has to know: a monthly figure extrapolated from four days is a
+// different claim from one measured over thirty.
+func TestListWorkflowRunsSinceReportsAnIncompleteWindow(t *testing.T) {
+	now := time.Now().UTC()
+
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		runs := make([]WorkflowRun, perPage)
+		for i := range runs {
+			runs[i] = WorkflowRun{ID: int64(i + 1), RunStartedAt: now.Add(-time.Duration(i) * time.Minute)}
+		}
+		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
+	}))
+
+	runs, complete, err := c.ListWorkflowRunsSince("o/r", now.Add(-30*24*time.Hour), 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 150 {
+		t.Errorf("got %d runs, want the cap of 150", len(runs))
+	}
+	if complete {
+		t.Error("the cap was reached before the window was covered; complete must be false")
+	}
+}
+
+func TestListWorkflowRunsSinceStopsOnAnEmptyPage(t *testing.T) {
+	var pages int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pages, 1)
+		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000})
+	}))
+
+	runs, complete, err := c.ListWorkflowRunsSince("o/r", time.Now().Add(-24*time.Hour), 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("got %d runs from an empty page", len(runs))
+	}
+	if !complete {
+		t.Error("nothing left to fetch means the window was covered")
+	}
+	if pages != 1 {
+		t.Errorf("made %d requests; an empty page should end pagination", pages)
+	}
+}
