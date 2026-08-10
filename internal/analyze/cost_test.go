@@ -88,7 +88,7 @@ func TestSummarizeCostAttributesPerWorkflowAndExtrapolates(t *testing.T) {
 
 	runs := []gh.WorkflowRun{
 		{ID: 1, Name: "ci", RunStartedAt: epoch},
-{ID: 2, Name: "ci", RunStartedAt: epoch.Add(10 * 24 * time.Hour)},
+		{ID: 2, Name: "ci", RunStartedAt: epoch.Add(10 * 24 * time.Hour)},
 		{ID: 3, Name: "release", RunStartedAt: epoch.Add(2 * 24 * time.Hour)},
 	}
 	jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{1: oneMinute, 2: oneMinute, 3: oneMinute}}
@@ -102,8 +102,9 @@ func TestSummarizeCostAttributesPerWorkflowAndExtrapolates(t *testing.T) {
 	if summary.RunsPriced != 3 {
 		t.Errorf("RunsPriced = %d, want 3", summary.RunsPriced)
 	}
-	// A 5-day window scales 6x to reach 30 days.
-	approx(t, summary.MonthlyUSD, 3*0.006*6)
+	// A 10-day window scales 3x to reach 30 days. It has to clear the one-week
+	// floor, below which no monthly figure is offered at all.
+	approx(t, summary.MonthlyUSD, 3*0.006*3)
 }
 
 func TestSummarizeCostDoesNotExtrapolateShortWindows(t *testing.T) {
