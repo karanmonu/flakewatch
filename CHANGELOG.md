@@ -3,7 +3,7 @@
 ## Unreleased
 
 **Step costs are split by platform**, which is what joins them to the platform
-table. Previously the report said Windows was $39.56 of hugo's $65.97, and
+table. Previously the report said Windows was $39.56 of the Test workflow's $65.97, and
 separately that `Test` was 3,237 minutes, and left the reader to guess those
 were the same jobs. "Which step is the expensive Windows one" is the actionable
 question, and it was answerable from data already fetched but not from anything
