@@ -57,6 +57,9 @@ type APIError struct {
 	// rate-limit budget. GitHub uses 403 for both permissions and rate limits,
 	// so the header is the only way to tell them apart.
 	RateLimited bool
+	// retryAfter is GitHub's Retry-After header, when the response carried
+	// one. Consumed by the retry loop; not part of the error's public face.
+	retryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -104,16 +107,22 @@ type Client struct {
 	baseURL string
 	http    *http.Client
 
-	mu   sync.Mutex
-	rate RateLimit
+	mu      sync.Mutex
+	rate    RateLimit
+	retried int
+
+	// retryWait is the base backoff before the first retry. Tests shrink it;
+	// nothing else should.
+	retryWait time.Duration
 }
 
 // NewClient returns a Client. token may be empty for unauthenticated use.
 func NewClient(token string) *Client {
 	return &Client{
-		token:   token,
-		baseURL: "https://api.github.com",
-		http:    &http.Client{Timeout: 30 * time.Second},
+		token:     token,
+		baseURL:   "https://api.github.com",
+		http:      &http.Client{Timeout: 30 * time.Second},
+		retryWait: time.Second,
 	}
 }
 
@@ -139,9 +148,90 @@ func (c *Client) recordRate(h http.Header) {
 	c.rate = RateLimit{Limit: lim, Remaining: rem, Reset: reset, Known: true}
 }
 
+// maxRetries bounds how many times one request is re-issued after a transient
+// server error. Three is enough to ride out a blip and small enough that a
+// genuinely down API fails in seconds rather than minutes.
+const maxRetries = 3
+
+// maxRetryWait caps the pause before a retry, whatever Retry-After says.
+const maxRetryWait = 30 * time.Second
+
+// transientStatus reports whether a status code is worth retrying: server-side
+// failures that routinely clear on their own. No 4xx belongs here -- a bad
+// token does not get better with patience -- and rate limits are excluded
+// explicitly, because retrying those would spend exactly the budget this
+// client exists to protect.
+func transientStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 // get performs a GET against path and decodes the JSON body into out.
+//
+// Transient server errors are retried with exponential backoff, honouring
+// Retry-After when GitHub sends one. One 502 in the middle of a
+// several-hundred-request analysis used to abort the whole thing, after the
+// API budget for everything already fetched had been spent -- the worst
+// possible exchange rate. Each retry is itself a real request against the same
+// shared budget, which is one more reason the attempts are bounded.
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	url := c.baseURL + path
+	for attempt := 0; ; attempt++ {
+		err := c.getOnce(ctx, url, out)
+		if err == nil {
+			return nil
+		}
+		apiErr, ok := err.(*APIError)
+		if !ok || apiErr.RateLimited || !transientStatus(apiErr.StatusCode) || attempt == maxRetries {
+			return err
+		}
+
+		timer := time.NewTimer(c.retryDelay(attempt, apiErr.retryAfter))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		c.noteRetry()
+	}
+}
+
+// retryDelay is the pause before re-issuing attempt's request: exponential
+// backoff from the client's base wait, raised to Retry-After when GitHub asked
+// for longer, and capped so no single pause outlasts patience.
+func (c *Client) retryDelay(attempt int, retryAfter time.Duration) time.Duration {
+	wait := c.retryWait << attempt
+	if retryAfter > wait {
+		wait = retryAfter
+	}
+	if wait > maxRetryWait {
+		wait = maxRetryWait
+	}
+	return wait
+}
+
+func (c *Client) noteRetry() {
+	c.mu.Lock()
+	c.retried++
+	c.mu.Unlock()
+}
+
+// Retried reports how many requests were re-issued after transient server
+// errors. The report discloses it, because an analysis that limped through
+// network weather should not read identically to one that did not.
+func (c *Client) Retried() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.retried
+}
+
+// getOnce is a single request: no retries, no waiting.
+func (c *Client) getOnce(ctx context.Context, url string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("building request for %s: %w", url, err)
@@ -167,12 +257,17 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			limited = true
 		}
+		var retryAfter time.Duration
+		if sec, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && sec > 0 {
+			retryAfter = time.Duration(sec) * time.Second
+		}
 		return &APIError{
 			StatusCode:  resp.StatusCode,
 			Status:      resp.Status,
 			URL:         url,
 			RateLimited: limited,
 			Message:     errorMessage(resp.Body),
+			retryAfter:  retryAfter,
 		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

@@ -56,7 +56,7 @@ func TestAnalyzeGroupsAndSorts(t *testing.T) {
 		run("release", "success", base.Add(1*time.Hour)),
 	}
 
-	result := Analyze(runs, Options{ZombieHours: 6, Now: base.Add(24 * time.Hour)})
+	result := Analyze(runs, Options{})
 
 	if len(result.Workflows) != 2 {
 		t.Fatalf("expected 2 workflows, got %d", len(result.Workflows))
@@ -66,23 +66,6 @@ func TestAnalyzeGroupsAndSorts(t *testing.T) {
 	}
 	if result.Workflows[0].FlakinessScore <= result.Workflows[1].FlakinessScore {
 		t.Errorf("expected descending flakiness order")
-	}
-}
-
-func TestZombieDetection(t *testing.T) {
-	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	runs := []gh.WorkflowRun{
-		{Name: "stuck", Status: "in_progress", RunStartedAt: base, HTMLURL: "https://example.com/1"},
-		{Name: "fresh", Status: "in_progress", RunStartedAt: base.Add(23 * time.Hour)},
-	}
-
-	result := Analyze(runs, Options{ZombieHours: 6, Now: base.Add(24 * time.Hour)})
-
-	if len(result.Zombies) != 1 {
-		t.Fatalf("expected 1 zombie, got %d", len(result.Zombies))
-	}
-	if result.Zombies[0].Workflow != "stuck" {
-		t.Errorf("expected zombie %q, got %q", "stuck", result.Zombies[0].Workflow)
 	}
 }
 

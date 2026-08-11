@@ -1,5 +1,5 @@
-// Package analyze computes flakiness scores and zombie-run detection from
-// GitHub Actions workflow run history.
+// Package analyze computes flakiness scores, cost attribution and related
+// findings from GitHub Actions workflow run history.
 package analyze
 
 import (
@@ -12,10 +12,6 @@ import (
 
 // Options configures the analysis.
 type Options struct {
-	// ZombieHours: a run still in progress after this many hours is a zombie.
-	ZombieHours float64
-	// Now allows tests to pin the clock; zero value means time.Now().
-	Now time.Time
 	// ChangedPaths are workflow files the caller cares about, in repository-root
 	// form (".github/workflows/ci.yml"). Used by the Action to mark the
 	// workflows a pull request actually touches. Empty means "all of them".
@@ -82,17 +78,9 @@ func workflowKey(r gh.WorkflowRun) string {
 // high enough that one flip cannot pin the score to an extreme.
 const MinRunsForScore = 5
 
-// Zombie is a run stuck in progress.
-type Zombie struct {
-	Workflow string  `json:"workflow"`
-	URL      string  `json:"url"`
-	Hours    float64 `json:"hours_running"`
-}
-
 // Result is the full analysis output.
 type Result struct {
 	Workflows []WorkflowStats `json:"workflows"`
-	Zombies   []Zombie        `json:"zombies"`
 	Cost      CostSummary     `json:"cost"`
 }
 
@@ -102,11 +90,6 @@ type Result struct {
 // A workflow that alternates pass/fail every run scores near 1.0; a workflow
 // that always passes (or always fails — that's broken, not flaky) scores 0.
 func Analyze(runs []gh.WorkflowRun, opts Options) Result {
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-
 	changed := make(map[string]struct{}, len(opts.ChangedPaths))
 	for _, p := range opts.ChangedPaths {
 		if p = strings.TrimSpace(p); p != "" {
@@ -118,15 +101,10 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 	totalRuns := make(map[string]int)
 	displayName := make(map[string]string)
 	newestRun := make(map[string]time.Time)
-	var zombies []Zombie
 
 	for _, r := range runs {
 		if r.Status == "in_progress" || r.Status == "queued" {
-			hours := now.Sub(r.RunStartedAt).Hours()
-			if hours > opts.ZombieHours {
-				zombies = append(zombies, Zombie{Workflow: r.Name, URL: r.HTMLURL, Hours: hours})
-			}
-			continue // not part of pass/fail history yet
+			continue // not completed, so not part of pass/fail history yet
 		}
 		// Every completed run counts towards Runs, whatever it concluded.
 		k := workflowKey(r)
@@ -188,7 +166,7 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 		}
 		return stats[i].FlakinessScore > stats[j].FlakinessScore
 	})
-	return Result{Workflows: stats, Zombies: zombies}
+	return Result{Workflows: stats}
 }
 
 // flakinessScore returns 0..1. Instability (transition rate) is damped by how
