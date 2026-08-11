@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed to see which files the PR changed
-      - uses: karanmonu/flakewatch@v0.7.0
+      - uses: karanmonu/flakewatch@v0.7.2
 ```
 
 It stays quiet by default: no workflow files changed, no comment. The comment is scoped to the workflows *that* pull request edits, and it edits its own comment rather than adding a new one on every push.
@@ -116,7 +116,7 @@ It stays quiet by default: no workflow files changed, no comment. The comment is
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
 | `runs` | `50` | Recent runs to analyze. One API request each |
-| `version` | `v0.7.0` | Release to download |
+| `version` | `v0.7.2` | Release to download |
 | `cache-dir` | _(none)_ | Keep run history here, so a window outlives one run |
 | `always-comment` | `false` | Comment on every PR, not just workflow changes |
 
@@ -130,7 +130,7 @@ sees only what `runs` reaches in one go — a few hours on a busy repository:
           path: .fwcache
           key: flakewatch-${{ github.run_id }}
           restore-keys: flakewatch-
-      - uses: karanmonu/flakewatch@v0.7.0
+      - uses: karanmonu/flakewatch@v0.7.2
         with:
           cache-dir: .fwcache
 ```
