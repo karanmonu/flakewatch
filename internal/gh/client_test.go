@@ -32,7 +32,7 @@ func TestGetSendsExpectedHeaders(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		gotAccept = r.Header.Get("Accept")
 		gotVersion = r.Header.Get("X-GitHub-Api-Version")
-		json.NewEncoder(w).Encode(runsPage{})
+		_ = json.NewEncoder(w).Encode(runsPage{})
 	}))
 
 	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
@@ -56,7 +56,7 @@ func TestGetOmitsAuthorizationWhenTokenEmpty(t *testing.T) {
 	var hadAuth bool
 	c := newTestClient(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, hadAuth = r.Header["Authorization"]
-		json.NewEncoder(w).Encode(runsPage{})
+		_ = json.NewEncoder(w).Encode(runsPage{})
 	}))
 
 	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
@@ -83,7 +83,7 @@ func TestListWorkflowRunsPaginates(t *testing.T) {
 		for i := range runs {
 			runs[i] = WorkflowRun{ID: int64((page-1)*100 + i)}
 		}
-		json.NewEncoder(w).Encode(runsPage{TotalCount: total, WorkflowRuns: runs})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: total, WorkflowRuns: runs})
 	}))
 
 	got, err := c.ListWorkflowRuns(context.Background(), "o/r", total)
@@ -103,7 +103,7 @@ func TestListWorkflowRunsRespectsMax(t *testing.T) {
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPerPage = r.URL.Query().Get("per_page")
 		runs := make([]WorkflowRun, 100)
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: runs})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: runs})
 	}))
 
 	got, err := c.ListWorkflowRuns(context.Background(), "o/r", 10)
@@ -125,10 +125,10 @@ func TestListWorkflowRunsStopsOnEmptyPage(t *testing.T) {
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := atomic.AddInt32(&pages, 1)
 		if page > 1 {
-			json.NewEncoder(w).Encode(runsPage{TotalCount: 1000})
+			_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 1000})
 			return
 		}
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: make([]WorkflowRun, 100)})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 1000, WorkflowRuns: make([]WorkflowRun, 100)})
 	}))
 
 	got, err := c.ListWorkflowRuns(context.Background(), "o/r", 1000)
@@ -184,7 +184,7 @@ func TestRunJobsPaginates(t *testing.T) {
 		if page > 2 {
 			n = 0
 		}
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 120, Jobs: make([]Job, n)})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 120, Jobs: make([]Job, n)})
 	}))
 
 	jobs, err := c.RunJobs(context.Background(), "o/r", 1)
@@ -204,7 +204,7 @@ func TestRunAllJobsCountsMissingRatherThanFailing(t *testing.T) {
 			http.Error(w, "gone", http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 7}}})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 7}}})
 	}))
 
 	res, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2, 3}, 2)
@@ -250,7 +250,7 @@ func TestRunAllJobsRespectsConcurrencyLimit(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 		atomic.AddInt32(&inFlight, -1)
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 0})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 0})
 	}))
 
 	ids := make([]int64, 20)
@@ -271,7 +271,7 @@ func TestRunAllJobsRespectsConcurrencyLimit(t *testing.T) {
 
 func TestRunAllJobsDefaultsConcurrencyWhenNonPositive(t *testing.T) {
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 0})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 0})
 	}))
 
 	if _, err := c.RunAllJobs(context.Background(), "o/r", []int64{1, 2}, 0); err != nil {
@@ -355,7 +355,7 @@ func TestClientRecordsRateLimitHeaders(t *testing.T) {
 		w.Header().Set("X-RateLimit-Limit", "1000")
 		w.Header().Set("X-RateLimit-Remaining", "873")
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-		json.NewEncoder(w).Encode(runsPage{})
+		_ = json.NewEncoder(w).Encode(runsPage{})
 	}))
 
 	if rl := c.RateLimit(); rl.Known {
@@ -388,11 +388,11 @@ func TestRunAllJobsTrimsWorkToFitRemainingBudget(t *testing.T) {
 		w.Header().Set("X-RateLimit-Limit", "1000")
 		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 		if r.URL.Path == "/repos/o/r/actions/runs" {
-			json.NewEncoder(w).Encode(runsPage{})
+			_ = json.NewEncoder(w).Encode(runsPage{})
 			return
 		}
 		atomic.AddInt32(&requests, 1)
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
 	}))
 
 	// One call so the client has seen the headers.
@@ -427,7 +427,7 @@ func TestRunAllJobsFetchesNothingBelowTheReserve(t *testing.T) {
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "1000")
 		w.Header().Set("X-RateLimit-Remaining", "5")
-		json.NewEncoder(w).Encode(runsPage{})
+		_ = json.NewEncoder(w).Encode(runsPage{})
 	}))
 	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
 		t.Fatal(err)
@@ -456,7 +456,7 @@ func TestRunAllJobsReturnsPartialResultWhenRateLimitedMidway(t *testing.T) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
 	}))
 
 	ids := make([]int64, 50)
@@ -492,7 +492,7 @@ func TestListWorkflowRunsSinceTrimsTheDateGranularEdge(t *testing.T) {
 
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotCreated = r.URL.Query().Get("created")
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 2, WorkflowRuns: []WorkflowRun{inside, edge}})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 2, WorkflowRuns: []WorkflowRun{inside, edge}})
 	}))
 
 	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", since, 100)
@@ -522,7 +522,7 @@ func TestListWorkflowRunsSinceReportsAnIncompleteWindow(t *testing.T) {
 		for i := range runs {
 			runs[i] = WorkflowRun{ID: int64(i + 1), RunStartedAt: now.Add(-time.Duration(i) * time.Minute)}
 		}
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
 	}))
 
 	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", now.Add(-30*24*time.Hour), 150)
@@ -541,7 +541,7 @@ func TestListWorkflowRunsSinceStopsOnAnEmptyPage(t *testing.T) {
 	var pages int32
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&pages, 1)
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 5000})
 	}))
 
 	runs, complete, err := c.ListWorkflowRunsSince(context.Background(), "o/r", time.Now().Add(-24*time.Hour), 500)
@@ -583,7 +583,7 @@ func TestListWorkflowRunsSinceDoesNotRefetchRowsAcrossPages(t *testing.T) {
 			id := int64((page-1)*perPage + i + 1)
 			runs = append(runs, WorkflowRun{ID: id, RunStartedAt: now.Add(-time.Duration(id) * time.Minute)})
 		}
-		json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
+		_ = json.NewEncoder(w).Encode(runsPage{TotalCount: 5000, WorkflowRuns: runs})
 	}))
 
 	runs, _, err := c.ListWorkflowRunsSince(context.Background(), "o/r", now.Add(-30*24*time.Hour), 150)
@@ -620,7 +620,7 @@ func TestRunAllJobsStopsWhenTheContextIsCancelled(t *testing.T) {
 		if atomic.AddInt32(&served, 1) == 2 {
 			cancel()
 		}
-		json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
+		_ = json.NewEncoder(w).Encode(jobsPage{TotalCount: 1, Jobs: []Job{{ID: 1}}})
 	}))
 
 	ids := make([]int64, 200)
@@ -645,7 +645,7 @@ func TestAPIErrorCarriesGitHubsMessage(t *testing.T) {
 	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com"}`))
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com"}`))
 	}))
 
 	_, err := c.RunJobs(context.Background(), "o/r", 1)

@@ -22,6 +22,16 @@ import (
 type StepCost struct {
 	Workflow string `json:"workflow"`
 	Step     string `json:"step"`
+	// Platform is the OS family the step ran on, empty when the runner label
+	// was not recognised.
+	//
+	// Without it the two tables cannot be joined. The platform table says
+	// Windows is $39.56 of hugo's $65.97; the step table says "Test" is 3,237
+	// minutes. A reader can guess those are the same jobs, and guessing is the
+	// gap: "which step is the expensive Windows one" is the actionable question
+	// and it was answerable from data already fetched but not from anything
+	// printed.
+	Platform string `json:"platform,omitempty"`
 	// Executions is how many job executions ran this step. A step inside a
 	// twelve-leg matrix counts twelve times per run, which is the point: a
 	// four-second step fanned out wide is not a four-second step.
@@ -45,6 +55,7 @@ const maxStepCosts = 10
 type stepKey struct {
 	workflow string
 	step     string
+	platform pricing.Platform
 }
 
 type stepTally struct {
@@ -55,12 +66,11 @@ type stepTally struct {
 
 // findStepCosts attributes each workflow's spend across its step names.
 //
-// Steps are aggregated by name across every job in the workflow, matrix legs
-// included. That merges "Build" on Linux with "Build" on Windows, which is
-// deliberate: the question this answers is "which part of this workflow is
-// expensive", and splitting one step into fourteen matrix rows buries the
-// answer under its own detail. The per-platform split already has its own
-// table.
+// Steps are aggregated by name and platform. Matrix legs on the same OS merge,
+// because fourteen rows of the same step buries the answer under its own
+// detail; legs on different platforms do not, because "Build on Windows" and
+// "Build on Linux" differ by a factor of ten in price and telling them apart is
+// the entire point of asking.
 //
 // Setup and teardown steps ("Set up job", "Post ...") are kept rather than
 // filtered. They are real billed time, they are often a surprising share of a
@@ -79,7 +89,11 @@ func findStepCosts(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor floa
 			runner := pricing.ResolveWith(j.Labels, rates)
 
 			for _, s := range j.Steps {
-				key := stepKey{workflow: workflowKey(r), step: s.Name}
+				key := stepKey{
+					workflow: workflowKey(r),
+					step:     s.Name,
+					platform: pricing.PlatformOf(runner.Label),
+				}
 				t := tally[key]
 				if t == nil {
 					t = &stepTally{}
@@ -118,6 +132,7 @@ func findStepCosts(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor floa
 		out = append(out, StepCost{
 			Workflow:   displayName[key.workflow],
 			Step:       key.step,
+			Platform:   string(key.platform),
 			Executions: t.executions,
 			Seconds:    t.seconds,
 			USD:        t.usd,
@@ -137,7 +152,10 @@ func findStepCosts(runs []gh.WorkflowRun, jobs gh.JobsResult, monthlyFactor floa
 		if out[i].Workflow != out[j].Workflow {
 			return out[i].Workflow < out[j].Workflow
 		}
-		return out[i].Step < out[j].Step
+		if out[i].Step != out[j].Step {
+			return out[i].Step < out[j].Step
+		}
+		return out[i].Platform < out[j].Platform
 	})
 
 	if len(out) > maxStepCosts {

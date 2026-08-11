@@ -120,6 +120,44 @@ func TestSubSecondStepsAreCountedButMeasureZero(t *testing.T) {
 	}
 }
 
+// Merging a step across platforms hides the only thing worth knowing about it.
+// hugo spends $39.56 on Windows against $23.74 for the same minutes on Linux;
+// a "Test" row that averages both tells you nothing you can act on.
+func TestStepCostsSplitByPlatform(t *testing.T) {
+	runs := []gh.WorkflowRun{{ID: 1, Name: "CI", Path: ".github/workflows/ci.yml"}}
+	jobs := gh.JobsResult{ByRun: map[int64][]gh.Job{
+		1: {
+			jobWithSteps([]string{"ubuntu-latest"}, epoch, time.Minute, mkstep("Test", epoch, 30*time.Second)),
+			jobWithSteps([]string{"windows-latest"}, epoch, time.Minute, mkstep("Test", epoch, 30*time.Second)),
+		},
+	}}
+
+	got := findStepCosts(runs, jobs, 0, nil)
+	if len(got) != 2 {
+		t.Fatalf("want one row per platform, got %+v", got)
+	}
+	if got[0].Platform != "windows" {
+		t.Fatalf("want the dearer platform first, got %+v", got)
+	}
+	// Windows is $0.010/min against Ubuntu's $0.006 -- the split is the point.
+	approx(t, got[0].USD, 0.005)
+	approx(t, got[1].USD, 0.003)
+}
+
+// Matrix legs on the *same* platform still merge, or the table becomes a log.
+func TestStepCostsStillMergeLegsOnOnePlatform(t *testing.T) {
+	var legs []gh.Job
+	for i := 0; i < 12; i++ {
+		legs = append(legs, jobWithSteps([]string{"ubuntu-latest"}, epoch, time.Minute,
+			mkstep("Build", epoch, 4*time.Second)))
+	}
+	runs := []gh.WorkflowRun{{ID: 1, Name: "CI", Path: ".github/workflows/ci.yml"}}
+	got := findStepCosts(runs, gh.JobsResult{ByRun: map[int64][]gh.Job{1: legs}}, 0, nil)
+	if len(got) != 1 || got[0].Executions != 12 {
+		t.Fatalf("want one merged row with 12 executions, got %+v", got)
+	}
+}
+
 func TestStepCostsGroupByFileNotDisplayName(t *testing.T) {
 	a := gh.WorkflowRun{ID: 1, Name: "CI", Path: ".github/workflows/ci.yml"}
 	b := gh.WorkflowRun{ID: 2, Name: "CI", Path: ".github/workflows/nightly.yml"}

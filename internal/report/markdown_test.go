@@ -38,7 +38,9 @@ func TestMarkdownIncludesCommentMarker(t *testing.T) {
 
 func TestMarkdownSortsByCostNotFlakiness(t *testing.T) {
 	var b strings.Builder
-	WriteMarkdown(&b, "o/r", sample())
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
 	out := b.String()
 
 	// E2E costs most but is the least flaky; someone editing CI cares about cost.
@@ -53,7 +55,9 @@ func TestMarkdownSortsByCostNotFlakiness(t *testing.T) {
 
 func TestMarkdownNamesTheTopSpenderWithItsShare(t *testing.T) {
 	var b strings.Builder
-	WriteMarkdown(&b, "o/r", sample())
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
 	out := b.String()
 	if !strings.Contains(out, "largest single line") || !strings.Contains(out, "40%") {
 		t.Errorf("expected the top spender called out with its share of total; got:\n%s", out)
@@ -63,7 +67,9 @@ func TestMarkdownNamesTheTopSpenderWithItsShare(t *testing.T) {
 // A thin sample must not show a number that looks authoritative.
 func TestMarkdownSuppressesUnreliableFlakinessScores(t *testing.T) {
 	var b strings.Builder
-	WriteMarkdown(&b, "o/r", sample())
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(b.String(), "(3 scored)") {
 		t.Error("a workflow with too few runs should show its run count instead of a score")
 	}
@@ -71,7 +77,9 @@ func TestMarkdownSuppressesUnreliableFlakinessScores(t *testing.T) {
 
 func TestMarkdownDisclosesExclusions(t *testing.T) {
 	var b strings.Builder
-	WriteMarkdown(&b, "o/r", sample())
+	if err := WriteMarkdown(&b, "o/r", sample()); err != nil {
+		t.Fatal(err)
+	}
 	out := b.String()
 	for _, want := range []string{
 		"github-hosted-windows-x64-large",

@@ -25,24 +25,30 @@ flakewatch -repo gohugoio/hugo -runs 200 -since 30d -cost
 flakewatch report — gohugoio/hugo
 ------------------------------------------------------------------------
 
-Estimated spend: $69.75 over 13.5 days  (~$155/month at this rate)
+Estimated spend: $70.65 over 13.5 days  (~$157/month at this rate)
 This is what the runs would cost at published rates. Public repositories
 are not billed for standard GitHub-hosted runners.
 Asked for 30 days but hit the run cap first, so this covers 13.5 days.
-About -runs 445 would cover the full window, at one request per run.
+About -runs 444 would cover the full window, at one request per run.
 
 WORKFLOW                      RUNS SCORED  FAIL%   FLAKY  AVG(s)      COST
-Test                            82     77    29%    0.24    3458    $65.97  🟡 unstable
-Build Docker image              64     59     2%    0.00     417     $2.64  🟢 stable
-Push on master                  20     20     0%    0.00     164     $0.73  🟢 stable
+Test                            82     78    28%    0.23    3465    $66.83  🟡 unstable
+Build Docker image              63     59     2%    0.00     417     $2.64  🟢 stable
+Push on master                  21     21     0%    0.00     163     $0.77  🟢 stable
+go_modules in /. - Update…       9      9     0%    0.00     152     $0.17  🟢 stable
 Close stale and lock clos…      13     13   100%    0.00       4     $0.08  ⛔ always failing
+Configured Graph Update: …       8      8     0%    0.00      33     $0.05  🟢 stable
+Running Copilot Code Revi…       4      4     0%       -     272     $0.11  only 4 scored
+
+1 workflow(s) had fewer than 5 runs in this window, so no flakiness
+score is shown for them. Raise -runs to widen the sample.
 
 Spend on platforms dearer than Linux:
 WORKFLOW                     PLATFORM  JOBS      COST    ON LINUX  DIFFERENCE
-Test                         windows     77    $39.56      $23.74  $15.82 (~$35.21/mo)
+Test                         windows     78    $40.02      $24.01  $16.01 (~$35.49/mo)
 ```
 
-`Test` is **94.6% of the entire bill**, and $39.56 of it is Windows legs that would cost $23.74 on Linux. Neither fact is available anywhere in the GitHub UI.
+`Test` is **94.6% of the entire bill**, and $40.02 of it is Windows legs that would cost $24.01 on Linux. Neither fact is available anywhere in the GitHub UI.
 
 `RUNS` and `SCORED` differ because cancelled runs cost money but say nothing about flakiness. And a workflow failing every single time scores zero for flakiness — consistently broken is not flaky — so it gets its own marker rather than a green dot.
 
@@ -101,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # needed to see which files the PR changed
-      - uses: karanmonu/flakewatch@v0.6.0
+      - uses: karanmonu/flakewatch@v0.7.0
 ```
 
 It stays quiet by default: no workflow files changed, no comment. The comment is scoped to the workflows *that* pull request edits, and it edits its own comment rather than adding a new one on every push.
@@ -110,7 +116,7 @@ It stays quiet by default: no workflow files changed, no comment. The comment is
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Needs `actions:read` and `pull-requests:write` |
 | `runs` | `50` | Recent runs to analyze. One API request each |
-| `version` | `v0.6.0` | Release to download |
+| `version` | `v0.7.0` | Release to download |
 | `cache-dir` | _(none)_ | Keep run history here, so a window outlives one run |
 | `always-comment` | `false` | Comment on every PR, not just workflow changes |
 
@@ -124,7 +130,7 @@ sees only what `runs` reaches in one go — a few hours on a busy repository:
           path: .fwcache
           key: flakewatch-${{ github.run_id }}
           restore-keys: flakewatch-
-      - uses: karanmonu/flakewatch@v0.6.0
+      - uses: karanmonu/flakewatch@v0.7.0
         with:
           cache-dir: .fwcache
 ```
@@ -149,9 +155,9 @@ Real output, `gohugoio/hugo`, a 13.5-day window:
 ```
 Runs that kept going after a newer commit replaced them:
 WORKFLOW                      RUNS   MINUTES        COST  PER MONTH
-Test                             7       448       $3.47  ~$7.72/mo
+Test                             7       448       $3.47  ~$7.70/mo
 Build Docker image               2         5       $0.03  ~$0.07/mo
-Example: https://github.com/gohugoio/hugo/actions/runs/30707211143
+Example: https://github.com/gohugoio/hugo/actions/runs/30996358802
 ```
 
 Seven runs, **448 billable minutes**, on commits that no longer existed — 5% of
@@ -174,20 +180,28 @@ concurrency:
 
 ## Which part of the workflow
 
-"`Test` is 93% of the bill" is half an answer. The next question is always which part of `Test`, and until now the answer was to go and read the logs.
+"`Test` is 94.6% of the bill" is half an answer. The next question is always which part of `Test`, and until now the answer was to go and read the logs.
 
 ```
 Where the time goes, by step:
-WORKFLOW                 STEP                               RAN   MINUTES      SHARE
-Test                     Test                                78      3237     $32.37
-Test                     Check                               72      2794     $16.76
-Test                     Run staticcheck                     76      1203      $7.22
-Test                     Post Install Go                     86       363      $3.59
-Build Docker image       Build and push                      59       389      $2.34
-Test                     Free Disk Space (Ubuntu)            78       177      $1.06
+WORKFLOW               STEP                       PLATFORM     RAN   MINUTES      SHARE
+Test                   Test                       windows       78      3277     $32.77
+Test                   Check                      linux         78      2839     $17.03
+Test                   Run staticcheck            linux         78      1219      $7.32
+Test                   Post Install Go            windows       78       354      $3.54
+Build Docker image     Build and push             linux         59       389      $2.34
+Test                   Free Disk Space (Ubuntu)   linux         78       180      $1.08
+Test                   Install Go                 windows       78        94      $0.94
+Test                   Run choco install mingw    windows       78        68      $0.68
+Test                   Install Ruby               windows       78        39      $0.39
+Test                   Build for dragonfly        linux         78        62      $0.37
 ```
 
-`Post Install Go` is the interesting row: $3.59 of teardown and cache upload
+The `PLATFORM` column is what joins this to the table above — `Test` is the
+Windows leg, `Check` is Linux, and that is the difference between "the Test
+workflow is expensive" and "one step on Windows is nearly half the bill".
+
+`Post Install Go` is the interesting row: $3.54 of teardown and cache upload
 that no one would have gone looking for, sitting in plain sight once the
 question is asked one level down.
 
@@ -200,7 +214,7 @@ Step timestamps have no sub-second component, so anything that finishes inside a
 ## It remembers what it already paid for
 
 Job data costs one API request per run. Against `gohugoio/hugo`, `-runs 200`
-bought 13.5 days of history and reaching 30 days needed 445 requests — and
+bought 13.5 days of history and reaching 30 days needed 444 requests — and
 inside GitHub Actions the automatic token allows roughly 1,000 requests an hour
 for the entire repository, shared with every other workflow. A month of history
 was not expensive there so much as unreachable.
@@ -303,7 +317,7 @@ CI runs flakewatch against this repository on every build, so a change that brea
 - [x] time-window sampling (`-since 30d`) instead of a fixed run count
 - [x] user-supplied rates for unrecognised and self-hosted runner labels
 - [x] runs that kept going after a newer commit replaced them
-- [x] per-step cost attribution
+- [x] per-step cost attribution, split by platform
 - [ ] job-level flakiness, not just workflow-level
 - [ ] duration regression detection (trend, not average)
 
