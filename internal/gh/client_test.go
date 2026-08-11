@@ -663,3 +663,115 @@ func TestAPIErrorCarriesGitHubsMessage(t *testing.T) {
 		t.Errorf("Error() = %q; the message is the useful part, it has to be in there", err)
 	}
 }
+
+// One transient 502 in the middle of a several-hundred-request analysis must
+// not abort it -- the budget for everything already fetched is already spent.
+func TestGetRetriesTransientServerErrors(t *testing.T) {
+	var calls int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(runsPage{})
+	}))
+	c.retryWait = time.Millisecond
+
+	if _, err := c.ListWorkflowRuns(context.Background(), "o/r", 1); err != nil {
+		t.Fatalf("a single 502 should be retried, not surfaced: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("made %d requests, want 2", calls)
+	}
+	if c.Retried() != 1 {
+		t.Errorf("Retried() = %d, want 1 -- the report discloses this", c.Retried())
+	}
+}
+
+// Bounded, because a genuinely down API should fail in seconds. The error that
+// finally surfaces is the real one, status and all.
+func TestGetGivesUpAfterBoundedRetries(t *testing.T) {
+	var calls int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	c.retryWait = time.Millisecond
+
+	_, err := c.ListWorkflowRuns(context.Background(), "o/r", 1)
+	if err == nil {
+		t.Fatal("expected the 503 to surface eventually")
+	}
+	if want := int32(maxRetries + 1); calls != want {
+		t.Errorf("made %d requests, want %d", calls, want)
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("surfaced error = %v, want the underlying 503", err)
+	}
+}
+
+// A 404 is routine (job data ages out) and a 401 will not get better with
+// patience. Neither is worth a second request.
+func TestGetDoesNotRetryClientErrors(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden} {
+		var calls int32
+		c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&calls, 1)
+			http.Error(w, "no", status)
+		}))
+		c.retryWait = time.Millisecond
+
+		if _, err := c.RunJobs(context.Background(), "o/r", 1); err == nil {
+			t.Fatalf("status %d: expected an error", status)
+		}
+		if calls != 1 {
+			t.Errorf("status %d: made %d requests, want 1 -- 4xx must not be retried", status, calls)
+		}
+	}
+}
+
+// Retrying a rate limit would spend exactly the budget the reserve protects.
+// The budget logic owns that case; the retry loop must keep its hands off.
+func TestGetDoesNotRetryRateLimits(t *testing.T) {
+	var calls int32
+	c := newTestClient(t, "t", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Limit", "1000")
+		http.Error(w, "slow down", http.StatusTooManyRequests)
+	}))
+	c.retryWait = time.Millisecond
+
+	_, err := c.RunJobs(context.Background(), "o/r", 1)
+	if !RateLimited(err) {
+		t.Fatalf("expected a rate-limit error, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("made %d requests, want 1 -- rate limits must not be retried", calls)
+	}
+}
+
+// The delay arithmetic, tested directly so the tests do not have to sleep
+// through it: exponential from the base, raised to Retry-After when GitHub
+// asks for longer, capped so no pause outlasts patience.
+func TestRetryDelayBacksOffHonoursRetryAfterAndCaps(t *testing.T) {
+	c := &Client{retryWait: time.Second}
+	tests := []struct {
+		attempt    int
+		retryAfter time.Duration
+		want       time.Duration
+	}{
+		{0, 0, time.Second},
+		{1, 0, 2 * time.Second},
+		{2, 0, 4 * time.Second},
+		{0, 7 * time.Second, 7 * time.Second},
+		{2, time.Second, 4 * time.Second},
+		{3, 5 * time.Minute, maxRetryWait},
+	}
+	for _, tt := range tests {
+		if got := c.retryDelay(tt.attempt, tt.retryAfter); got != tt.want {
+			t.Errorf("retryDelay(%d, %v) = %v, want %v", tt.attempt, tt.retryAfter, got, tt.want)
+		}
+	}
+}

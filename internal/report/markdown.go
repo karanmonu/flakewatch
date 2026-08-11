@@ -178,6 +178,9 @@ func WriteMarkdown(w io.Writer, repo string, r analyze.Result) error {
 	if c.RunsSkippedForBudget > 0 {
 		fmt.Fprintf(&b, "- %d run(s) were not fetched, to leave the repository's shared API rate limit intact. This sample is smaller than requested.\n", c.RunsSkippedForBudget)
 	}
+	if c.RequestRetries > 0 {
+		fmt.Fprintf(&b, "- %d request(s) were retried after transient server errors.\n", c.RequestRetries)
+	}
 	b.WriteString("- The monthly figure is a projection from the observed window and is the least reliable number here.\n")
 	b.WriteString("\n</details>\n")
 

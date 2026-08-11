@@ -70,6 +70,10 @@ type CostSummary struct {
 	// RunsSkippedForBudget counts runs left unfetched to protect the shared API
 	// rate limit. Non-zero means the sample is smaller than requested.
 	RunsSkippedForBudget int `json:"runs_skipped_for_budget"`
+	// RequestRetries counts requests re-issued after transient server errors
+	// (502 and friends). Disclosed because an analysis that limped through
+	// network weather should not read identically to one that did not.
+	RequestRetries int `json:"request_retries,omitempty"`
 	// WindowTruncated is true when -since asked for a longer window than the run
 	// cap allowed. The figures are real; they just cover less time than asked
 	// for, which matters most for the monthly projection.

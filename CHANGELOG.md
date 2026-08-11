@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**Transient server errors are retried.** A 502 in the middle of a
+several-hundred-request analysis used to abort the whole thing, after the API
+budget for everything already fetched had been spent -- the worst possible
+exchange rate. 500, 502, 503 and 504 now get up to three retries with
+exponential backoff, honouring Retry-After when GitHub sends one. Rate limits
+and 4xx are never retried: retrying a rate limit would spend exactly the
+budget the client exists to protect, and a bad token does not get better with
+patience. Retried requests are counted and disclosed in the report, because an
+analysis that limped through network weather should not read identically to
+one that did not.
+
+**The v0.1 zombie-run detection is gone.** It flagged runs stuck in progress
+past `-zombie-hours`, predated cost attribution, and had stopped earning its
+place: the README no longer mentioned it, and the superseded-runs table
+answers the adjacent question with dollars attached. Code that earns no
+output earns no maintenance. Breaking, mildly: `-zombie-hours` is no longer a
+flag, and `zombies` no longer appears in `-json` output.
+
+## Unreleased
+
 **Step costs are split by platform**, which is what joins them to the platform
 table. Previously the report said Windows was $39.56 of the Test workflow's $65.97, and
 separately that `Test` was 3,237 minutes, and left the reader to guess those

@@ -65,13 +65,6 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		}
 	}
 
-	if len(r.Zombies) > 0 {
-		fmt.Fprintf(w, "\nZombie runs (stuck in progress):\n")
-		for _, z := range r.Zombies {
-			fmt.Fprintf(w, "  %-28s %.1fh  %s\n", truncate(z.Workflow, 28), z.Hours, z.URL)
-		}
-	}
-
 	if showCost {
 		writeOpportunities(w, r.Cost.Opportunities)
 		writeSuperseded(w, r.Cost.Superseded)
@@ -130,6 +123,9 @@ func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
 	if c.RunsSkippedForBudget > 0 {
 		fmt.Fprintf(w, "%d run(s) were not fetched to protect the shared API rate limit,\n"+
 			"so this covers a smaller sample than requested. Lower -runs to avoid it.\n", c.RunsSkippedForBudget)
+	}
+	if c.RequestRetries > 0 {
+		fmt.Fprintf(w, "%d request(s) were retried after transient server errors.\n", c.RequestRetries)
 	}
 	if c.WindowTruncated && c.RequestedWindowDays > 0 {
 		fmt.Fprintf(w, "Asked for %.0f days but hit the run cap first, so this covers %.1f days.\n",

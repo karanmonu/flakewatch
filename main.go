@@ -1,10 +1,10 @@
 // Command flakewatch analyzes GitHub Actions workflow history for a repository
-// and reports flaky workflows, zombie (stuck) runs, duration trends, and an
-// estimate of what the runs cost at published rates.
+// and reports which workflows are flaky and what the runs would cost at
+// published rates, attributed per workflow, per platform and per step.
 //
 // Usage:
 //
-//	flakewatch -repo owner/name [-runs 200] [-since 30d] [-zombie-hours 6] [-cost] [-rates rates.json]
+//	flakewatch -repo owner/name [-runs 200] [-since 30d] [-cost] [-rates rates.json]
 //
 // Authentication uses the GITHUB_TOKEN environment variable (a classic PAT or
 // fine-grained token with actions:read is sufficient).
@@ -41,7 +41,6 @@ func main() {
 	runs := flag.Int("runs", 200, "maximum number of recent workflow runs to analyze")
 	since := flag.String("since", "", "analyze a fixed time window instead of a run count, e.g. 30d, 2w, 48h (-runs still caps the requests)")
 	changed := flag.String("changed", "", "comma-separated workflow paths the caller changed, e.g. .github/workflows/ci.yml (marked in -markdown output)")
-	zombieHours := flag.Float64("zombie-hours", 6, "runs in progress longer than this are flagged as zombies")
 	withCost := flag.Bool("cost", false, "estimate cost at published rates (one extra API request per run)")
 	ratesFile := flag.String("rates", "", "JSON file of runner label to USD per minute, for self-hosted and unrecognised labels")
 	noCache := flag.Bool("no-cache", false, "do not read or write the local run history")
@@ -160,7 +159,6 @@ func main() {
 	}
 
 	result := analyze.Analyze(workflowRuns, analyze.Options{
-		ZombieHours:  *zombieHours,
 		ChangedPaths: splitPaths(*changed),
 	})
 
@@ -198,6 +196,7 @@ func main() {
 		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows, rates)
 		result.Cost.RunsFromHistory = fromHistory
 		result.Cost.RunsFromCache = fromCache
+		result.Cost.RequestRetries = client.Retried()
 		if window > 0 {
 			result.Cost.RequestedWindowDays = window.Hours() / 24
 			result.Cost.WindowTruncated = !windowComplete

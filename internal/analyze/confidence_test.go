@@ -28,7 +28,7 @@ func TestTwoRunsDoNotProduceAConfidentScore(t *testing.T) {
 		completed("lint", "failure", day.Add(time.Hour)),
 	}
 
-	result := Analyze(runs, Options{ZombieHours: 6, Now: day.Add(24 * time.Hour)})
+	result := Analyze(runs, Options{})
 
 	if len(result.Workflows) != 1 {
 		t.Fatalf("expected 1 workflow, got %d", len(result.Workflows))
@@ -50,7 +50,7 @@ func TestEnoughRunsProducesAConfidentScore(t *testing.T) {
 		runs = append(runs, completed("ci", "success", day.Add(time.Duration(i)*time.Hour)))
 	}
 
-	result := Analyze(runs, Options{ZombieHours: 6, Now: day.Add(24 * time.Hour)})
+	result := Analyze(runs, Options{})
 
 	if !result.Workflows[0].ScoreConfident {
 		t.Errorf("%d runs should clear the confidence threshold", MinRunsForScore)
@@ -74,7 +74,7 @@ func TestConfidentScoresSortAboveThinOnes(t *testing.T) {
 		runs = append(runs, completed("solid", conclusion, day.Add(time.Duration(i+2)*time.Hour)))
 	}
 
-	result := Analyze(runs, Options{ZombieHours: 6, Now: day.Add(48 * time.Hour)})
+	result := Analyze(runs, Options{})
 
 	if result.Workflows[0].Name != "solid" {
 		t.Errorf("expected the confidently-scored workflow first, got %q", result.Workflows[0].Name)
