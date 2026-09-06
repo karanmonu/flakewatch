@@ -38,3 +38,43 @@ func TestAlwaysFailingIsNotReportedAsStable(t *testing.T) {
 		t.Fatalf("a workflow that never fails is stable, got %q", got)
 	}
 }
+
+// The flaky-jobs section exists to show dilution. A job merely matching its
+// workflow's score is the same finding twice and must not print; a job well
+// above it must; and a section with nothing to say must say nothing.
+func TestWriteFlakyJobsShowsOnlyDilution(t *testing.T) {
+	var b strings.Builder
+	diluted := analyze.JobStats{
+		Workflow: "CI", Name: "Test (windows)",
+		Scored: 8, Failures: 4, FailureRate: 0.5,
+		FlakinessScore: 0.9, WorkflowScore: 0.2, ScoreConfident: true,
+	}
+	tracking := analyze.JobStats{
+		Workflow: "CI", Name: "Test (linux)",
+		Scored: 8, FailureRate: 0.5,
+		FlakinessScore: 0.2, WorkflowScore: 0.2, ScoreConfident: true,
+	}
+	writeFlakyJobs(&b, []analyze.JobStats{diluted, tracking})
+	out := b.String()
+	if !strings.Contains(out, "Test (windows)") {
+		t.Errorf("diluted flaky job must be shown, got:\n%s", out)
+	}
+	if strings.Contains(out, "Test (linux)") {
+		t.Errorf("job tracking its workflow's score must not be shown, got:\n%s", out)
+	}
+
+	b.Reset()
+	writeFlakyJobs(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("no jobs must mean no section, got:\n%s", b.String())
+	}
+
+	// An unconfident score never earns a row, however dramatic it looks.
+	b.Reset()
+	thin := diluted
+	thin.ScoreConfident = false
+	writeFlakyJobs(&b, []analyze.JobStats{thin})
+	if b.Len() != 0 {
+		t.Errorf("unconfident scores must not print, got:\n%s", b.String())
+	}
+}
