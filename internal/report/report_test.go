@@ -39,6 +39,46 @@ func TestAlwaysFailingIsNotReportedAsStable(t *testing.T) {
 	}
 }
 
+func TestTerminalWarnsOnDurationRegression(t *testing.T) {
+	r := analyze.Result{Workflows: []analyze.WorkflowStats{{
+		Name:               "CI",
+		Runs:               10,
+		Scored:             10,
+		ScoreConfident:     true,
+		PreviousMedianSec:  100,
+		RecentMedianSec:    130,
+		DurationRatio:      1.3,
+		DurationRegression: true,
+	}}}
+	var b strings.Builder
+	WriteTerminal(&b, "owner/repo", r, false)
+	out := b.String()
+	for _, want := range []string{"WARN", "CI", "130", "100", "+30%", "most recent 5 scored"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("duration regression output should contain %q; got:\n%s", want, out)
+		}
+	}
+}
+
+func TestJSONIncludesDurationRegressionMeasurements(t *testing.T) {
+	r := analyze.Result{Workflows: []analyze.WorkflowStats{{
+		Name:               "CI",
+		PreviousMedianSec:  100,
+		RecentMedianSec:    130,
+		DurationRatio:      1.3,
+		DurationRegression: true,
+	}}}
+	var b strings.Builder
+	if err := WriteJSON(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"previous_median_sec": 100`, `"recent_median_sec": 130`, `"duration_ratio": 1.3`, `"duration_regression": true`} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("JSON should contain %s; got:\n%s", want, b.String())
+		}
+	}
+}
+
 // The flaky-jobs section exists to show dilution. A job merely matching its
 // workflow's score is the same finding twice and must not print; a job well
 // above it must; and a section with nothing to say must say nothing.

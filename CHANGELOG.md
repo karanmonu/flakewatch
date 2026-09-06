@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+**Recent duration regressions are reported instead of being hidden by the
+whole-window average** (#2). For workflows with at least ten scored runs,
+flakewatch compares the median of the most recent five against the five before
+them and prints a `WARN` row when the newer window is more than 1.25 times
+slower. Both medians and the ratio are included in JSON so the warning can be
+audited without reverse-engineering the average.
+
 **Jobs are scored for flakiness individually, not just workflows** (#1). The
 workflow score dilutes a flaky job among its stable siblings: a matrix with
 seven green legs and one alternating leg reads as mildly unstable while one

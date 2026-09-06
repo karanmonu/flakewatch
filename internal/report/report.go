@@ -65,6 +65,7 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		}
 	}
 
+	writeDurationRegressions(w, r.Workflows)
 	writeFlakyJobs(w, r.Jobs)
 
 	if showCost {
@@ -75,6 +76,27 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		writeRateStaleness(w, time.Now())
 	}
 	fmt.Fprintln(w)
+}
+
+func writeDurationRegressions(w io.Writer, workflows []analyze.WorkflowStats) {
+	var regressions []analyze.WorkflowStats
+	for _, s := range workflows {
+		if s.DurationRegression {
+			regressions = append(regressions, s)
+		}
+	}
+	if len(regressions) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nDuration regressions (most recent %d scored runs vs previous %d):\n",
+		analyze.DurationWindowRuns, analyze.DurationWindowRuns)
+	fmt.Fprintf(w, "%-6s %-28s %12s %12s %8s\n", "LEVEL", "WORKFLOW", "RECENT(s)", "PREVIOUS(s)", "CHANGE")
+	for _, s := range regressions {
+		fmt.Fprintf(w, "%-6s %-28s %12.0f %12.0f %+7.0f%%\n", "WARN",
+			truncate(s.Name, 28), s.RecentMedianSec, s.PreviousMedianSec,
+			(s.DurationRatio-1)*100)
+	}
 }
 
 // jobDilutionFactor is how much flakier than its workflow a job must be

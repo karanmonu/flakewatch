@@ -219,3 +219,65 @@ func TestAnalyzeGroupsByFileNotDisplayName(t *testing.T) {
 		}
 	})
 }
+
+func TestAnalyzeDetectsRecentDurationRegression(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	var runs []gh.WorkflowRun
+	// Deliberately supply newest-first, as GitHub does. The older window has a
+	// 100-second median and the recent one a 130-second median.
+	for i, seconds := range []int{132, 131, 130, 129, 128, 102, 101, 100, 99, 98} {
+		at := start.Add(time.Duration(9-i) * time.Hour)
+		r := run("CI", "success", at)
+		r.UpdatedAt = at.Add(time.Duration(seconds) * time.Second)
+		runs = append(runs, r)
+	}
+
+	s := Analyze(runs, Options{}).Workflows[0]
+	if !s.DurationRegression {
+		t.Fatal("recent median 130s is more than 1.25x the previous 100s; want a warning")
+	}
+	if s.RecentMedianSec != 130 || s.PreviousMedianSec != 100 {
+		t.Fatalf("medians = recent %.0fs, previous %.0fs; want 130s and 100s",
+			s.RecentMedianSec, s.PreviousMedianSec)
+	}
+	if math.Abs(s.DurationRatio-1.3) > 1e-9 {
+		t.Fatalf("DurationRatio = %v, want 1.3", s.DurationRatio)
+	}
+}
+
+func TestAnalyzeDurationRegressionBoundaryAndMinimumSample(t *testing.T) {
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	makeRuns := func(durations []int) []gh.WorkflowRun {
+		runs := make([]gh.WorkflowRun, 0, len(durations))
+		for i, seconds := range durations {
+			at := start.Add(time.Duration(i) * time.Hour)
+			r := run("CI", "success", at)
+			r.UpdatedAt = at.Add(time.Duration(seconds) * time.Second)
+			runs = append(runs, r)
+		}
+		return runs
+	}
+
+	t.Run("exactly twenty five percent is not a regression", func(t *testing.T) {
+		runs := makeRuns([]int{100, 100, 100, 100, 100, 125, 125, 125, 125, 125})
+		if got := Analyze(runs, Options{}).Workflows[0].DurationRegression; got {
+			t.Fatal("the issue requires more than 1.25x; exactly 1.25x must not warn")
+		}
+	})
+
+	t.Run("fewer than two complete windows is not a regression", func(t *testing.T) {
+		runs := makeRuns([]int{100, 100, 100, 100, 200, 200, 200, 200, 200})
+		s := Analyze(runs, Options{}).Workflows[0]
+		if s.DurationRegression || s.DurationRatio != 0 {
+			t.Fatalf("nine runs cannot fill two %d-run windows: %+v", DurationWindowRuns, s)
+		}
+	})
+
+	t.Run("zero previous median is not divided by", func(t *testing.T) {
+		runs := makeRuns([]int{0, 0, 0, 0, 0, 100, 100, 100, 100, 100})
+		s := Analyze(runs, Options{}).Workflows[0]
+		if s.DurationRegression || s.DurationRatio != 0 || math.IsInf(s.DurationRatio, 0) {
+			t.Fatalf("a zero baseline must not produce a ratio or warning: %+v", s)
+		}
+	})
+}

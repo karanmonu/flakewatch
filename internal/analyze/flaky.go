@@ -36,7 +36,13 @@ type WorkflowStats struct {
 	Transitions    int     `json:"transitions"` // pass<->fail flips in chronological order
 	FlakinessScore float64 `json:"flakiness_score"`
 	AvgDurationSec float64 `json:"avg_duration_sec"`
-	CostUSD        float64 `json:"cost_usd"` // populated only when -cost is used
+	// Duration regression compares adjacent windows of DurationWindowRuns.
+	// The medians and ratio are kept so machine consumers can audit the warning.
+	PreviousMedianSec  float64 `json:"previous_median_sec,omitempty"`
+	RecentMedianSec    float64 `json:"recent_median_sec,omitempty"`
+	DurationRatio      float64 `json:"duration_ratio,omitempty"`
+	DurationRegression bool    `json:"duration_regression,omitempty"`
+	CostUSD            float64 `json:"cost_usd"` // populated only when -cost is used
 	// ScoreConfident reports whether there were enough runs for the flakiness
 	// score to mean anything. See MinRunsForScore.
 	ScoreConfident bool `json:"score_confident"`
@@ -77,6 +83,15 @@ func workflowKey(r gh.WorkflowRun) string {
 // is a judgement call; five is low enough to stay useful on quiet repos and
 // high enough that one flip cannot pin the score to an extreme.
 const MinRunsForScore = 5
+
+// DurationWindowRuns is the number of consecutive runs in each duration
+// window. Five matches the minimum sample used for a meaningful flakiness
+// score while keeping the detector useful on quieter repositories.
+const DurationWindowRuns = 5
+
+// durationRegressionFactor is strict: exactly 1.25x is the boundary, not a
+// regression. That matches the issue's "more than 1.25x" acceptance test.
+const durationRegressionFactor = 1.25
 
 // Result is the full analysis output.
 type Result struct {
@@ -158,6 +173,17 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 			s.FailureRate = float64(s.Failures) / float64(s.Scored)
 			s.AvgDurationSec = totalDur / float64(s.Scored)
 		}
+		if len(wr) >= 2*DurationWindowRuns {
+			cut := len(wr) - DurationWindowRuns
+			previous := wr[cut-DurationWindowRuns : cut]
+			recent := wr[cut:]
+			s.PreviousMedianSec = medianRunDuration(previous)
+			s.RecentMedianSec = medianRunDuration(recent)
+			if s.PreviousMedianSec > 0 {
+				s.DurationRatio = s.RecentMedianSec / s.PreviousMedianSec
+				s.DurationRegression = s.DurationRatio > durationRegressionFactor
+			}
+		}
 		s.FlakinessScore = flakinessScore(s.Scored, s.Transitions, s.FailureRate)
 		s.ScoreConfident = s.Scored >= MinRunsForScore
 		stats = append(stats, s)
@@ -172,6 +198,19 @@ func Analyze(runs []gh.WorkflowRun, opts Options) Result {
 		return stats[i].FlakinessScore > stats[j].FlakinessScore
 	})
 	return Result{Workflows: stats}
+}
+
+func medianRunDuration(runs []gh.WorkflowRun) float64 {
+	durations := make([]float64, len(runs))
+	for i, r := range runs {
+		durations[i] = r.UpdatedAt.Sub(r.RunStartedAt).Seconds()
+	}
+	sort.Float64s(durations)
+	mid := len(durations) / 2
+	if len(durations)%2 == 1 {
+		return durations[mid]
+	}
+	return (durations[mid-1] + durations[mid]) / 2
 }
 
 // flakinessScore returns 0..1. Instability (transition rate) is damped by how

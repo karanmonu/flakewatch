@@ -52,6 +52,13 @@ Test                         windows     78    $40.02      $24.01  $16.01 (~$35.
 
 `RUNS` and `SCORED` differ because cancelled runs cost money but say nothing about flakiness. And a workflow failing every single time scores zero for flakiness — consistently broken is not flaky — so it gets its own marker rather than a green dot.
 
+The average can hide a workflow that recently became slower. Once a workflow
+has ten scored runs, flakewatch compares the median duration of the most recent
+five with the five before them. A recent median more than 1.25 times the earlier
+one prints a `WARN` row with both medians and the percentage change. The same
+measurements are available in JSON as `previous_median_sec`,
+`recent_median_sec`, and `duration_ratio`.
+
 ## What it says about repositories you know
 
 Measured, not illustrative — [`.github/workflows/survey.yml`](.github/workflows/survey.yml) produced this and you can re-run it. Every row is `-runs 50 -since 30d`, so most windows are short; that is the point of the second column.
@@ -319,7 +326,7 @@ CI runs flakewatch against this repository on every build, so a change that brea
 - [x] runs that kept going after a newer commit replaced them
 - [x] per-step cost attribution, split by platform
 - [x] job-level flakiness, not just workflow-level
-- [ ] duration regression detection (trend, not average)
+- [x] duration regression detection (adjacent five-run median windows)
 
 ## License
 
