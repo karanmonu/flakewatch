@@ -81,7 +81,12 @@ const MinRunsForScore = 5
 // Result is the full analysis output.
 type Result struct {
 	Workflows []WorkflowStats `json:"workflows"`
-	Cost      CostSummary     `json:"cost"`
+	// Jobs is per-job flakiness, present only when job data was available --
+	// with -cost, or served from local history. Jobs cost one request per run
+	// to fetch, and that request is already spent (and cached) for costing,
+	// so job scoring itself adds no API traffic.
+	Jobs []JobStats  `json:"jobs,omitempty"`
+	Cost CostSummary `json:"cost"`
 }
 
 // Analyze groups runs by workflow name and computes stats.

@@ -194,6 +194,9 @@ func main() {
 			jobs = mergeJobs(jobs, workflowRuns, history)
 		}
 		result.Cost = analyze.SummarizeCost(workflowRuns, jobs, result.Workflows, rates)
+		// Same job data, second question: which job inside the workflow is the
+		// flaky one. Free at this point -- the requests are already spent.
+		result.Jobs = analyze.AnalyzeJobs(workflowRuns, jobs, result.Workflows)
 		result.Cost.RunsFromHistory = fromHistory
 		result.Cost.RunsFromCache = fromCache
 		result.Cost.RequestRetries = client.Retried()

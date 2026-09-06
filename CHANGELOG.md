@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+**Jobs are scored for flakiness individually, not just workflows** (#1). The
+workflow score dilutes a flaky job among its stable siblings: a matrix with
+seven green legs and one alternating leg reads as mildly unstable while one
+leg wastes a retry on every second run. Job histories are now scored with the
+same transition-rate formula, and the report gains a section for the only rows
+worth printing -- jobs meaningfully flakier than the workflow containing them.
+Matrix legs count separately, which is the point. Costs nothing: the job data
+was already fetched (and cached) for cost attribution, so this adds zero API
+requests. Full per-job list in `-json` under `jobs`.
+
+## Unreleased
+
 **Transient server errors are retried.** A 502 in the middle of a
 several-hundred-request analysis used to abort the whole thing, after the API
 budget for everything already fetched had been spent -- the worst possible

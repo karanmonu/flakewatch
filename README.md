@@ -318,7 +318,7 @@ CI runs flakewatch against this repository on every build, so a change that brea
 - [x] user-supplied rates for unrecognised and self-hosted runner labels
 - [x] runs that kept going after a newer commit replaced them
 - [x] per-step cost attribution, split by platform
-- [ ] job-level flakiness, not just workflow-level
+- [x] job-level flakiness, not just workflow-level
 - [ ] duration regression detection (trend, not average)
 
 ## License

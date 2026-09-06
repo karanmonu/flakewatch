@@ -65,6 +65,8 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		}
 	}
 
+	writeFlakyJobs(w, r.Jobs)
+
 	if showCost {
 		writeOpportunities(w, r.Cost.Opportunities)
 		writeSuperseded(w, r.Cost.Superseded)
@@ -73,6 +75,46 @@ func WriteTerminal(w io.Writer, repo string, r analyze.Result, showCost bool) {
 		writeRateStaleness(w, time.Now())
 	}
 	fmt.Fprintln(w)
+}
+
+// jobDilutionFactor is how much flakier than its workflow a job must be
+// before it earns a row. The section exists to surface what the workflow
+// table hides -- a flaky leg diluted by stable siblings -- so a job merely
+// tracking its workflow's score is not a finding, it is the same finding
+// printed twice.
+const jobDilutionFactor = 1.5
+
+// maxFlakyJobRows keeps the section a summary rather than a dump. The full
+// list is always in -json.
+const maxFlakyJobRows = 10
+
+func writeFlakyJobs(w io.Writer, jobs []analyze.JobStats) {
+	var rows []analyze.JobStats
+	for _, j := range jobs {
+		if !j.ScoreConfident || j.FlakinessScore == 0 {
+			continue
+		}
+		if j.FlakinessScore < j.WorkflowScore*jobDilutionFactor {
+			continue
+		}
+		rows = append(rows, j)
+		if len(rows) == maxFlakyJobRows {
+			break
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nFlaky jobs their workflow's score hides:\n")
+	fmt.Fprintf(w, "%-24s %-24s %6s %6s %7s %9s\n", "WORKFLOW", "JOB", "SCORED", "FAIL%", "FLAKY", "WORKFLOW FLAKY")
+	for _, j := range rows {
+		fmt.Fprintf(w, "%-24s %-24s %6d %5.0f%% %7.2f %9.2f\n",
+			truncate(j.Workflow, 22), truncate(j.Name, 22),
+			j.Scored, j.FailureRate*100, j.FlakinessScore, j.WorkflowScore)
+	}
+	fmt.Fprintln(w, "A job scored here alternates pass/fail on its own history; its workflow's")
+	fmt.Fprintln(w, "score is diluted by stabler sibling jobs. Matrix legs count separately.")
 }
 
 func writeCostHeadline(w io.Writer, c analyze.CostSummary) {
